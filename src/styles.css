@@ -246,3 +246,4 @@ kbd.sm { font-size: 12px; border-radius: 5px; padding: 0 5px; border-width: 1px;
 .keypick:hover { background: var(--hover); }
 .keypick.on { border-color: var(--purple); color: var(--purple); }
 .shortcuts > div { align-items: center; gap: 12px; }
+.field textarea { border: 1px solid #e3e1dc; border-radius: 8px; padding: 9px 12px; outline: none; background: #fff; width: 100%; resize: vertical; font-weight: 400; }

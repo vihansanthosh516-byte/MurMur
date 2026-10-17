@@ -378,6 +378,8 @@ export function Settings({ onClose }) {
         <div className="set-body">
           {tab === "account" && <>
             <label className="field"><span>Your name</span><input value={s.name} placeholder="Vihan" onChange={(e) => up({ name: e.target.value })} /></label>
+            <label className="field"><span>About me (helps with names and special words)</span>
+              <textarea rows={3} value={s.context} placeholder="Example: I'm Vihan. I do policy debate. Words I use: interp, pre-fiat, kritik, topicality." onChange={(e) => up({ context: e.target.value })} /></label>
             <label className="field"><span>Groq API key</span><input type="password" value={s.apiKey} placeholder="gsk_..." onChange={(e) => up({ apiKey: e.target.value })} /></label>
             <p className="muted small">Get a free key at <b>console.groq.com/keys</b> (sign in → Create API Key → copy). It stays on this PC only.</p>
             <div className="row-split"><button className="btn" onClick={testKey} disabled={!s.apiKey}>Test key</button><span className="small">{test}</span></div>
