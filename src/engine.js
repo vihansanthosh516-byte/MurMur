@@ -61,10 +61,9 @@ async function startRecording(mode) {
     const t = await T();
     targetApp = t ? await t.invoke("active_window_title").catch(() => "") : document.title;
     if (mode === "command" && t) selection = await t.invoke("copy_selection").catch(() => "");
-    const stream = await navigator.mediaDevices.getUserMedia({
-      audio: { deviceId: s.micId !== "default" ? { exact: s.micId } : undefined, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
+    const stream = await openMic(s.micId);
     const ctx = new AudioContext();
+    if (ctx.state === "suspended") await ctx.resume().catch(() => {});
     const src = ctx.createMediaStreamSource(stream);
     const gain = ctx.createGain();
     gain.gain.value = s.whisperMode ? 3.5 : 1; // whisper mode: make quiet speech louder
@@ -109,8 +108,29 @@ async function startRecording(mode) {
     t?.invoke("set_overlay", { visible: true });
     t?.invoke("set_cancel_key", { on: true });
   } catch (e) {
-    fail("Microphone error: " + e.message);
+    fail(micMessage(e));
   }
+}
+
+// Open the chosen mic. If it is gone (unplugged), use the default mic instead.
+async function openMic(micId) {
+  const base = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+  if (micId && micId !== "default") {
+    try {
+      return await navigator.mediaDevices.getUserMedia({ audio: { ...base, deviceId: { exact: micId } } });
+    } catch (e) {
+      if (e.name !== "OverconstrainedError" && e.name !== "NotFoundError") throw e;
+    }
+  }
+  return navigator.mediaDevices.getUserMedia({ audio: base });
+}
+
+function micMessage(e) {
+  const n = e?.name;
+  if (n === "NotAllowedError") return "Mic blocked. Windows Settings → Privacy → Microphone → allow desktop apps";
+  if (n === "NotReadableError") return "Mic is busy. Close Wispr Flow, Zoom or Discord";
+  if (n === "NotFoundError") return "No microphone found. Plug one in";
+  return "Microphone error: " + (e?.message || n || e);
 }
 
 function stopRecording() {
