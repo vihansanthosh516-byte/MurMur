@@ -150,7 +150,7 @@ export function Transforms() {
   }
   return (
     <div className="page">
-      <PageHead title="Transforms" sub="Rewrite text with AI. In any app: select text, hold Ctrl+Alt+Space and say what to do (e.g. “make this shorter”)." />
+      <PageHead title="Transforms" sub="Rewrite text with AI. In any app: select text, hold Alt+Shift+Space and say what to do (e.g. “make this shorter”)." />
       <div className="two-col">
         <div className="card">
           <textarea rows={8} placeholder="Paste text here…" value={input} onChange={(e) => setInput(e.target.value)} />
@@ -420,7 +420,7 @@ export function Settings({ onClose }) {
             <KeyPicker label="Command mode / Ask AI (hold)" action="command" s={s} up={up} />
             <div><span>Cancel</span><span><kbd className="sm">Esc</kbd></span></div>
             <div className="row-split" style={{ border: 0 }}>
-              <button className="btn ghost" onClick={() => { up({ hotkeys: { talk: "Ctrl+Space", handsfree: "Ctrl+Shift+Space", command: "Ctrl+Alt+Space" } }); setTimeout(applyHotkeys, 50); }}>Reset to default</button>
+              <button className="btn ghost" onClick={() => { up({ hotkeys: { talk: "Ctrl+Space", handsfree: "Ctrl+Shift+Space", command: "Alt+Shift+Space" } }); setTimeout(applyHotkeys, 50); }}>Reset to default</button>
               <button className="btn ghost" onClick={toggleHandsFree}>Test hands-free now</button>
             </div>
             <p className="muted small">Command mode: select text, hold the key and say what to change. With nothing selected, ask any question and the answer gets typed.</p>
@@ -534,9 +534,9 @@ export function Help({ onClose }) {
         <li>Click into any text box in any app.</li>
         <li>Hold <kbd className="sm">Ctrl</kbd>+<kbd className="sm">Space</kbd>, talk, let go. The text gets typed for you.</li>
         <li>Tap <kbd className="sm">Ctrl</kbd>+<kbd className="sm">Space</kbd> quickly to go hands-free. Tap again to finish.</li>
-        <li>Select text, hold <kbd className="sm">Ctrl</kbd>+<kbd className="sm">Alt</kbd>+<kbd className="sm">Space</kbd>, say “make this formal”.</li>
+        <li>Select text, hold <kbd className="sm">Alt</kbd>+<kbd className="sm">Shift</kbd>+<kbd className="sm">Space</kbd>, say “make this formal”.</li>
         <li>End with “press enter” to send. Say only “delete that” to undo the last dictation.</li>
-        <li>With nothing selected, hold <kbd className="sm">Ctrl</kbd>+<kbd className="sm">Alt</kbd>+<kbd className="sm">Space</kbd> and ask a question. The answer gets typed.</li>
+        <li>With nothing selected, hold <kbd className="sm">Alt</kbd>+<kbd className="sm">Shift</kbd>+<kbd className="sm">Space</kbd> and ask a question. The answer gets typed.</li>
         <li>Closing the window keeps Murmur running in the tray (bottom-right of the taskbar).</li>
       </ol>
     </Modal>

@@ -23,7 +23,8 @@ export default function App() {
   const [ui, setUi] = useStore("ui");
   const [settings] = useStore("settings");
   const [live, setLive] = useState({});
-  const taken = live.taken || [];
+  const [hideTaken, setHideTaken] = useState(false);
+  const taken = hideTaken ? [] : live.taken || [];
   useEffect(() => subscribe(setLive), []);
   useEffect(() => { if (!settings.apiKey) setModal("settings"); }, []);
   // Floating bar buttons open a page here.
@@ -79,6 +80,7 @@ export default function App() {
               <div className="livebar error" style={{ margin: "16px 40px 0" }}>
                 <span className="dot" />
                 <span><b>{taken.join(", ")}</b> could not be set. Another app (like Wispr Flow) may use it. Quit that app, or pick a different key in Settings → Shortcuts.</span>
+                <button className="link" onClick={() => setHideTaken(true)}>Close</button>
               </div>
             )}
             {page === "dictation" ? <Dictation setModal={setModal} live={live} /> : <Page />}
@@ -154,7 +156,7 @@ function Dictation({ setModal, live }) {
           <div className="empty">
             Hold <kbd className="sm">Ctrl</kbd> + <kbd className="sm">Space</kbd> in any app and start talking. Let go and your words appear.
             <div className="muted small" style={{ marginTop: 8 }}>
-              Tap it quickly for hands-free mode. <kbd className="sm">Ctrl</kbd>+<kbd className="sm">Alt</kbd>+<kbd className="sm">Space</kbd> = command mode (edit selected text by voice). <kbd className="sm">Esc</kbd> cancels.
+              Tap it quickly for hands-free mode. <kbd className="sm">Alt</kbd>+<kbd className="sm">Shift</kbd>+<kbd className="sm">Space</kbd> = command mode (edit selected text by voice). <kbd className="sm">Esc</kbd> cancels.
             </div>
           </div>
         )}

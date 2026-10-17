@@ -1,13 +1,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use enigo::{Direction, Enigo, Key, Keyboard, Settings};
-use std::{collections::HashMap, sync::Mutex, thread::sleep, time::Duration};
+use std::{collections::HashMap, sync::{atomic::{AtomicBool, Ordering}, Mutex}, thread::sleep, time::Duration};
 use tauri::{
     menu::{Menu, MenuItem},
     tray::{MouseButton, TrayIconBuilder, TrayIconEvent},
     Emitter, Manager, PhysicalPosition, WindowEvent,
 };
-use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Shortcut, ShortcutState};
+use tauri_plugin_global_shortcut::{Code, GlobalShortcutExt, Modifiers, Shortcut, ShortcutState};
 
 fn cancel_key() -> Shortcut { Shortcut::new(None, Code::Escape) }
 
@@ -196,6 +196,48 @@ fn set_cancel_key(app: tauri::AppHandle, on: bool) {
     }
 }
 
+// ---------- key release ----------
+// Windows does not always report when a hotkey is let go. So for push-to-talk we
+// check the keys ourselves: as soon as any key of the combo is up, that is the release.
+static WATCHING: AtomicBool = AtomicBool::new(false);
+
+fn vk_for(code: Code) -> Option<i32> {
+    use Code::*;
+    let s = format!("{code:?}");
+    Some(match code {
+        Space => 0x20, Enter => 0x0D, Tab => 0x09, Backquote => 0xC0, Backslash => 0xDC,
+        Slash => 0xBF, Period => 0xBE, Comma => 0xBC, Semicolon => 0xBA, Quote => 0xDE,
+        BracketLeft => 0xDB, BracketRight => 0xDD, Minus => 0xBD, Equal => 0xBB,
+        _ if s.starts_with("Key") && s.len() == 4 => s.as_bytes()[3] as i32,
+        _ if s.starts_with("Digit") && s.len() == 6 => s.as_bytes()[5] as i32,
+        _ if s.starts_with('F') => 0x6F + s[1..].parse::<i32>().ok()?,
+        _ => return None,
+    })
+}
+
+fn down(vk: i32) -> bool {
+    unsafe { windows_sys::Win32::UI::Input::KeyboardAndMouse::GetAsyncKeyState(vk) as u16 & 0x8000 != 0 }
+}
+
+fn watch_release(app: tauri::AppHandle, id: String, sc: Shortcut) {
+    let mut need: Vec<Vec<i32>> = Vec::new();
+    if let Some(vk) = vk_for(sc.key) {
+        need.push(vec![vk]);
+    }
+    if sc.mods.contains(Modifiers::CONTROL) { need.push(vec![0x11]); }
+    if sc.mods.contains(Modifiers::SHIFT) { need.push(vec![0x10]); }
+    if sc.mods.contains(Modifiers::ALT) { need.push(vec![0x12]); }
+    if sc.mods.contains(Modifiers::SUPER) { need.push(vec![0x5B, 0x5C]); }
+    std::thread::spawn(move || {
+        sleep(Duration::from_millis(30));
+        while need.iter().all(|alts| alts.iter().any(|&vk| down(vk))) {
+            sleep(Duration::from_millis(15));
+        }
+        WATCHING.store(false, Ordering::SeqCst);
+        let _ = app.emit("hotkey", serde_json::json!({ "id": id, "state": "up" }));
+    });
+}
+
 // ---------- saved settings ----------
 // Settings live in files in the app data folder. Browser storage alone can lose
 // recent writes when the app is closed, which wiped the API key.
@@ -291,8 +333,19 @@ fn main() {
                 .with_handler(|app, sc, ev| {
                     let keys = app.state::<Hotkeys>();
                     let Some(id) = keys.0.lock().unwrap().get(&sc.id()).map(|(n, _)| n.clone()) else { return };
-                    let state = if ev.state() == ShortcutState::Pressed { "down" } else { "up" };
-                    let _ = app.emit("hotkey", serde_json::json!({ "id": id, "state": state }));
+                    let hold = id == "talk" || id == "command";
+                    if ev.state() == ShortcutState::Pressed {
+                        // Holding a key repeats "pressed"; only the first one counts.
+                        if hold && WATCHING.swap(true, Ordering::SeqCst) {
+                            return;
+                        }
+                        let _ = app.emit("hotkey", serde_json::json!({ "id": id, "state": "down" }));
+                        if hold {
+                            watch_release(app.clone(), id, *sc);
+                        }
+                    } else if !hold {
+                        let _ = app.emit("hotkey", serde_json::json!({ "id": id, "state": "up" }));
+                    }
                 })
                 .build(),
         )
