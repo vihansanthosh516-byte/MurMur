@@ -1,0 +1,64 @@
+{
+    "$schema":  "https://schema.tauri.app/config/2",
+    "productName":  "Murmur",
+    "version": "1.1.0",
+    "identifier":  "com.vihan.murmur",
+    "build":  {
+                  "beforeDevCommand":  "npm run dev",
+                  "devUrl":  "http://localhost:1420",
+                  "beforeBuildCommand":  "npm run build",
+                  "frontendDist":  "../dist"
+              },
+    "app":  {
+                "windows":  [
+                                {
+                                    "label":  "main",
+                                    "title":  "Murmur",
+                                    "width":  1280,
+                                    "height":  800,
+                                    "minWidth":  900,
+                                    "minHeight":  600,
+                                    "decorations":  false,
+                                    "center":  true
+                                },
+                                {
+                                    "label":  "overlay",
+                                    "url":  "index.html#overlay",
+                                    "width":  620,
+                                    "height":  64,
+                                    "decorations":  false,
+                                    "transparent":  true,
+                                    "alwaysOnTop":  true,
+                                    "skipTaskbar":  true,
+                                    "resizable":  false,
+                                    "visible":  false,
+                                    "focus":  false,
+                                    "shadow":  false
+                                }
+                            ],
+                "security":  {
+                                 "csp":  null
+                             }
+            },
+    "bundle":  {
+                   "active":  true,
+                   "targets":  [
+                                   "nsis",
+                                   "msi"
+                               ],
+                   "icon":  [
+                                "icons/32x32.png",
+                                "icons/128x128.png",
+                                "icons/icon.ico"
+                            ],
+                   "createUpdaterArtifacts":  true
+               },
+    "plugins":  {
+                    "updater":  {
+                                    "pubkey":  "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDFBQjYwNkJGOTMxNkNEMUYKUldRZnpSYVR2d2EyR3FvaE13VTA0eEd2bmJhMGtiZzBkRDVVNWVJMGFHZXZWNHBGbnAwbGVVbzMK",
+                                    "endpoints":  [
+                                                      "https://github.com/vihansanthosh516-byte/murmur/releases/latest/download/latest.json"
+                                                  ]
+                                }
+                }
+}
