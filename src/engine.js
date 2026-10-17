@@ -82,6 +82,9 @@ async function startRecording(mode) {
     }, 50);
     beep(880);
     update({ state: "recording", startedAt: Date.now() });
+    // Safety: never record forever (for example if a key-up got lost).
+    const me = rec;
+    rec.maxTimer = setTimeout(() => { if (rec === me) finish(); }, 6 * 60 * 1000);
     // Mute speakers after the start beep so music isn't picked up.
     if (t && s.muteWhileRecording) setTimeout(() => rec && t.invoke("set_mute", { on: true }).catch(() => {}), 150);
     // Live text: re-transcribe what we have so far every 2 s and show it in the pop-up.
@@ -111,6 +114,7 @@ function stopRecording() {
     const r = rec; rec = null;
     clearInterval(r.timer);
     clearInterval(r.live);
+    clearTimeout(r.maxTimer);
     unmute();
     r.recorder.onstop = () => {
       r.stream.getTracks().forEach((x) => x.stop());

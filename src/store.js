@@ -55,8 +55,28 @@ export function get(key) {
 export function set(key, value) {
   const v = typeof value === "function" ? value(get(key)) : value;
   cache[key] = v;
-  try { localStorage.setItem("murmur:" + key, JSON.stringify(v)); } catch {}
+  const json = JSON.stringify(v);
+  try { localStorage.setItem("murmur:" + key, json); } catch {}
+  // Also write to a file in the app folder, so nothing is lost when the app closes.
+  if (window.__TAURI_INTERNALS__) import("@tauri-apps/api/core").then(({ invoke }) => invoke("save_kv", { key, value: json }).catch(() => {}));
   listeners.forEach((l) => l());
+}
+
+// Load saved files into browser storage before the app starts.
+// Files win; anything only in browser storage gets copied to a file.
+export async function hydrate() {
+  if (!window.__TAURI_INTERNALS__) return;
+  try {
+    const { invoke } = await import("@tauri-apps/api/core");
+    const files = await invoke("load_kv");
+    for (const key of Object.keys(DEFAULTS)) {
+      if (files[key] != null) localStorage.setItem("murmur:" + key, files[key]);
+      else {
+        const v = localStorage.getItem("murmur:" + key);
+        if (v != null) invoke("save_kv", { key, value: v }).catch(() => {});
+      }
+    }
+  } catch {}
 }
 
 // Keep windows (main + overlay) in sync.

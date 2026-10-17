@@ -196,6 +196,73 @@ fn set_cancel_key(app: tauri::AppHandle, on: bool) {
     }
 }
 
+// ---------- saved settings ----------
+// Settings live in files in the app data folder. Browser storage alone can lose
+// recent writes when the app is closed, which wiped the API key.
+fn kv_dir(app: &tauri::AppHandle) -> Result<std::path::PathBuf, String> {
+    let d = app.path().app_data_dir().map_err(|e| e.to_string())?.join("store");
+    std::fs::create_dir_all(&d).map_err(|e| e.to_string())?;
+    Ok(d)
+}
+
+#[tauri::command]
+fn save_kv(app: tauri::AppHandle, key: String, value: String) -> Result<(), String> {
+    if !key.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return Err("bad key".into());
+    }
+    let d = kv_dir(&app)?;
+    let tmp = d.join(format!("{key}.tmp"));
+    std::fs::write(&tmp, value).map_err(|e| e.to_string())?;
+    std::fs::rename(&tmp, d.join(format!("{key}.json"))).map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+fn load_kv(app: tauri::AppHandle) -> Result<HashMap<String, String>, String> {
+    let mut out = HashMap::new();
+    for e in std::fs::read_dir(kv_dir(&app)?).map_err(|e| e.to_string())?.flatten() {
+        let path = e.path();
+        if path.extension().and_then(|x| x.to_str()) == Some("json") {
+            if let (Some(k), Ok(v)) = (path.file_stem().and_then(|x| x.to_str()), std::fs::read_to_string(&path)) {
+                out.insert(k.to_string(), v);
+            }
+        }
+    }
+    Ok(out)
+}
+
+/// Quit cleanly: give the speakers back their old mute state first.
+fn quit(app: &tauri::AppHandle) {
+    if let Some(was) = app.state::<MuteState>().0.lock().unwrap().take() {
+        if let Ok(v) = speakers() {
+            unsafe {
+                let _ = v.SetMute(was, std::ptr::null());
+            }
+        }
+    }
+    app.exit(0);
+}
+
+/// Add "Quit Murmur" to the Start menu (runs murmur.exe --quit).
+fn add_quit_shortcut() {
+    let Ok(appdata) = std::env::var("APPDATA") else { return };
+    let lnk = format!("{appdata}\\Microsoft\\Windows\\Start Menu\\Programs\\Quit Murmur.lnk");
+    let Ok(exe) = std::env::current_exe() else { return };
+    if std::path::Path::new(&lnk).exists() {
+        return;
+    }
+    let script = format!(
+        "$s=(New-Object -ComObject WScript.Shell).CreateShortcut('{}');$s.TargetPath='{}';$s.Arguments='--quit';$s.IconLocation='{},0';$s.Save()",
+        lnk.replace('\'', "''"),
+        exe.display().to_string().replace('\'', "''"),
+        exe.display().to_string().replace('\'', "''")
+    );
+    use std::os::windows::process::CommandExt;
+    let _ = std::process::Command::new("powershell")
+        .args(["-NoProfile", "-WindowStyle", "Hidden", "-Command", &script])
+        .creation_flags(0x0800_0000) // no console window
+        .spawn();
+}
+
 fn show_main(app: &tauri::AppHandle) {
     if let Some(w) = app.get_webview_window("main") {
         let _ = w.show();
@@ -206,6 +273,14 @@ fn show_main(app: &tauri::AppHandle) {
 
 fn main() {
     tauri::Builder::default()
+        // A second launch talks to the running app: "--quit" stops it, otherwise open the window.
+        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+            if args.iter().any(|a| a == "--quit") {
+                quit(app);
+            } else {
+                show_main(app);
+            }
+        }))
         .plugin(tauri_plugin_http::init())
         .plugin(tauri_plugin_autostart::init(
             tauri_plugin_autostart::MacosLauncher::LaunchAgent,
@@ -227,13 +302,19 @@ fn main() {
         .manage(MuteState::default())
         .invoke_handler(tauri::generate_handler![
             paste_text, copy_selection, active_window_title, set_overlay, open_main,
-            set_hotkeys, set_mute, press_key, set_cancel_key
+            set_hotkeys, set_mute, press_key, set_cancel_key, save_kv, load_kv
         ])
         .setup(|app| {
 
             let show = MenuItem::with_id(app, "show", "Open Murmur", true, None::<&str>)?;
-            let quit = MenuItem::with_id(app, "quit", "Quit", true, None::<&str>)?;
-            let menu = Menu::with_items(app, &[&show, &quit])?;
+            if std::env::args().any(|a| a == "--quit") {
+                // Nothing was running, so there is nothing to quit.
+                std::process::exit(0);
+            }
+            add_quit_shortcut();
+            let stop = MenuItem::with_id(app, "stop", "Stop recording", true, None::<&str>)?;
+            let quit_item = MenuItem::with_id(app, "quit", "Quit Murmur", true, None::<&str>)?;
+            let menu = Menu::with_items(app, &[&show, &stop, &quit_item])?;
             TrayIconBuilder::new()
                 .icon(app.default_window_icon().unwrap().clone())
                 .tooltip("Murmur")
@@ -241,7 +322,10 @@ fn main() {
                 .show_menu_on_left_click(false)
                 .on_menu_event(|app, e| match e.id.as_ref() {
                     "show" => show_main(app),
-                    "quit" => app.exit(0),
+                    "stop" => {
+                        let _ = app.emit("hotkey", serde_json::json!({ "id": "cancel", "state": "down" }));
+                    }
+                    "quit" => quit(app),
                     _ => {}
                 })
                 .on_tray_icon_event(|tray, e| {
