@@ -407,6 +407,7 @@ export function Settings({ onClose }) {
             <label className="toggle-row"><span>Sound effects<small>Beep on start and stop</small></span><Toggle on={s.sounds} set={(v) => up({ sounds: v })} /></label>
             <label className="toggle-row"><span>Keep text in clipboard<small>Don't restore your old clipboard after pasting</small></span><Toggle on={s.keepInClipboard} set={(v) => up({ keepInClipboard: v })} /></label>
             <label className="toggle-row"><span>Launch at startup<small>Start hidden in the tray when Windows starts</small></span><Toggle on={s.autostart} set={setAutostart} /></label>
+            <label className="toggle-row"><span>Learn from my dictations<small>Learn your names, special words and writing style as you use Murmur</small></span><Toggle on={s.learn} set={(v) => up({ learn: v })} /></label>
             <label className="toggle-row"><span>Live text<small>Show your words in the pop-up while you talk</small></span><Toggle on={s.liveText} set={(v) => up({ liveText: v })} /></label>
             <label className="toggle-row"><span>Mute music while recording<small>Silence your speakers while you hold the key</small></span><Toggle on={s.muteWhileRecording} set={(v) => up({ muteWhileRecording: v })} /></label>
             <label className="toggle-row"><span>Voice commands<small>End with “press enter” to send. Say only “delete that” to undo.</small></span><Toggle on={s.voiceCommands} set={(v) => up({ voiceCommands: v })} /></label>

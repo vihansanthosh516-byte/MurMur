@@ -18,6 +18,7 @@ export const DEFAULTS = {
     llmModel: "openai/gpt-oss-20b",
     whisperMode: false,
     context: "",
+    learn: true,
     hotkeys: { talk: "Ctrl+Space", handsfree: "Ctrl+Shift+Space", command: "Alt+Shift+Space" },
     liveText: true,
     muteWhileRecording: true,

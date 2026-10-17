@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Icon, { Logo } from "./icons";
 import { useStore, stats, loadAudio, deleteAudio, dayKey, useNow, set as setKey, get as getKey, uid, wordCount } from "./store";
-import { IS_TAURI, subscribe, retry, cancel } from "./engine";
+import { IS_TAURI, subscribe, retry, cancel, learnedWords } from "./engine";
 import { Notetaker, Insights, Dictionary, Snippets, Style, Transforms, Scratchpad, Settings, Help, Modal } from "./pages";
 
 const NAV = [
@@ -186,6 +186,7 @@ function Dictation({ setModal, live }) {
               <span>{pct >= 100 ? "Unlocked" : `Unlocks in ${fmtK(unlock - st.words)} words`}</span>
             </div>
             {pct >= 100 && <VoiceProfile history={history} />}
+            {settings.learn && <div className="small muted" style={{ marginTop: 12 }} title={learnedWords().join(", ")}>Learned {learnedWords().length} of your words</div>}
           </div>
         </div>
       </div>
