@@ -352,11 +352,14 @@ export function Settings({ onClose }) {
   const [mics, setMics] = useState([]);
   const [tab, setTab] = useState(s.apiKey ? "general" : "account");
   const [test, setTest] = useState("");
+  const [micErr, setMicErr] = useState("");
   const up = (p) => setS({ ...s, ...p });
 
   useEffect(() => {
-    navigator.mediaDevices.getUserMedia({ audio: true }).then((st) => { st.getTracks().forEach((t) => t.stop()); return navigator.mediaDevices.enumerateDevices(); })
-      .then((d) => setMics(d.filter((x) => x.kind === "audioinput"))).catch(() => {});
+    const list = () => navigator.mediaDevices.enumerateDevices().then((d) => setMics(d.filter((x) => x.kind === "audioinput")));
+    navigator.mediaDevices.getUserMedia({ audio: true })
+      .then((st) => { st.getTracks().forEach((t) => t.stop()); setMicErr(""); return list(); })
+      .catch((e) => { setMicErr((e?.name || "Error") + ": " + (e?.message || "")); list().catch(() => {}); });
   }, []);
 
   async function setAutostart(v) {
@@ -400,6 +403,7 @@ export function Settings({ onClose }) {
                 <option value="default">System default</option>
                 {mics.filter((m) => m.deviceId !== "default").map((m) => <option key={m.deviceId} value={m.deviceId}>{m.label || "Microphone"}</option>)}
               </select></label>
+            {micErr && <p className="small" style={{ color: "#e5484d" }}>Mic problem: {micErr}</p>}
             <label className="field"><span>Language</span>
               <select value={s.language} onChange={(e) => up({ language: e.target.value })}>{LANGS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
             <label className="toggle-row"><span>Smart formatting<small>Remove filler words, fix punctuation, apply style</small></span><Toggle on={s.smartFormat} set={(v) => up({ smartFormat: v })} /></label>
