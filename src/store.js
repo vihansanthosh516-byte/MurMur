@@ -7,6 +7,7 @@ const cache = {};
 export const DEFAULTS = {
   settings: {
     apiKey: "",
+    deepgramKey: "",
     name: "",
     language: "auto",
     micId: "default",

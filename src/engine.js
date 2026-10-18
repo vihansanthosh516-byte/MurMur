@@ -213,6 +213,7 @@ function key() {
 export async function transcribe(blob) {
   const s = get("settings");
   if (s.offline) return transcribeOffline(blob, s.offlineModel, s.language);
+  if (s.deepgramKey && s.deepgramKey.trim()) return transcribeDeepgram(blob, s);
   const fd = new FormData();
   fd.append("file", new File([blob], "audio.webm", { type: "audio/webm" }));
   fd.append("model", s.sttModel);
@@ -228,6 +229,19 @@ export async function transcribe(blob) {
   });
   if (!r.ok) throw new Error("Transcribe failed (" + r.status + "): " + (await r.text()).slice(0, 200));
   return ((await r.json()).text || "").trim();
+}
+
+// Deepgram Nova-3: fast and accurate. Names go in as key terms.
+async function transcribeDeepgram(blob, s) {
+  const words = [...new Set([s.name, ...get("dictionary").map((d) => d.word), ...(s.learn ? learnedWords() : [])].filter(Boolean))].slice(0, 100);
+  const q = new URLSearchParams({ model: "nova-3", smart_format: "true", punctuate: "true", language: s.language === "auto" ? "multi" : s.language });
+  words.forEach((w) => q.append("keyterm", w));
+  const r = await xfetch("https://api.deepgram.com/v1/listen?" + q, {
+    method: "POST", headers: { Authorization: "Token " + s.deepgramKey.trim(), "Content-Type": "audio/webm" }, body: blob,
+  });
+  if (!r.ok) throw new Error("Deepgram failed (" + r.status + "): " + (await r.text()).slice(0, 200));
+  const j = await r.json();
+  return (j.results?.channels?.[0]?.alternatives?.[0]?.transcript || "").trim();
 }
 
 export async function chat(system, user) {

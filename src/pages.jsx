@@ -391,7 +391,9 @@ export function Settings({ onClose }) {
             <label className="field"><span>Groq API key</span><input type="password" value={s.apiKey} placeholder="gsk_..." onChange={(e) => up({ apiKey: e.target.value })} /></label>
             <p className="muted small">Get a free key at <b>console.groq.com/keys</b> (sign in → Create API Key → copy). It stays on this PC only.</p>
             <div className="row-split"><button className="btn" onClick={testKey} disabled={!s.apiKey}>Test key</button><span className="small">{test}</span></div>
-            <label className="field"><span>Speech model</span>
+            <label className="field"><span>Deepgram API key (fast speech, optional)</span><input type="password" value={s.deepgramKey || ""} placeholder="Paste Deepgram key" onChange={(e) => up({ deepgramKey: e.target.value })} /></label>
+            <p className="muted small">Free $200 credit, no card: <b>console.deepgram.com</b> → sign up → Create API Key. When set, it replaces Groq for speech.</p>
+            <label className="field"><span>Speech model (Groq)</span>
               <select value={s.sttModel} onChange={(e) => up({ sttModel: e.target.value })}>
                 <option value="whisper-large-v3-turbo">Whisper Large v3 Turbo (fast)</option>
                 <option value="whisper-large-v3">Whisper Large v3 (most accurate)</option>

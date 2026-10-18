@@ -18,6 +18,9 @@
                             "allow":  [
                                           {
                                               "url":  "https://api.groq.com/*"
+                                          },
+                                          {
+                                              "url":  "https://api.deepgram.com/*"
                                           }
                                       ]
                         },
