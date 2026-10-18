@@ -26,7 +26,7 @@ export default function App() {
   const [hideTaken, setHideTaken] = useState(false);
   const taken = hideTaken ? [] : live.taken || [];
   useEffect(() => subscribe(setLive), []);
-  useEffect(() => { if (!settings.apiKey) setModal("settings"); }, []);
+  useEffect(() => { if (!settings.apiKey && !settings.deepgramKey) setModal("settings"); }, []);
   // Floating bar buttons open a page here.
   useEffect(() => {
     if (!IS_TAURI) return;

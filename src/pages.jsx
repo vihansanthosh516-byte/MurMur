@@ -350,7 +350,7 @@ export function Settings({ onClose }) {
   const [s, setS] = useStore("settings");
   const [, setHistory] = useStore("history");
   const [mics, setMics] = useState([]);
-  const [tab, setTab] = useState(s.apiKey ? "general" : "account");
+  const [tab, setTab] = useState(s.apiKey || s.deepgramKey ? "general" : "account");
   const [test, setTest] = useState("");
   const [micErr, setMicErr] = useState("");
   const up = (p) => setS({ ...s, ...p });
