@@ -20,7 +20,8 @@
         "minHeight": 600,
         "decorations": false,
         "center": true,
-        "backgroundThrottling": "disabled"
+        "backgroundThrottling": "disabled",
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,AudioServiceSandbox --disable-audio-service-sandbox"
       },
       {
         "label": "overlay",
@@ -35,7 +36,8 @@
         "visible": false,
         "focus": false,
         "shadow": false,
-        "backgroundThrottling": "disabled"
+        "backgroundThrottling": "disabled",
+        "additionalBrowserArgs": "--disable-features=msWebOOUI,msPdfOOUI,msSmartScreenProtection,AudioServiceSandbox --disable-audio-service-sandbox"
       }
     ],
     "security": {
