@@ -122,7 +122,17 @@ async function openMic(micId) {
       if (e.name !== "OverconstrainedError" && e.name !== "NotFoundError") throw e;
     }
   }
-  return navigator.mediaDevices.getUserMedia({ audio: base });
+  try {
+    return await navigator.mediaDevices.getUserMedia({ audio: base });
+  } catch (e) {
+    if (e.name !== "NotFoundError") throw e;
+    // Windows default mic missing: try every mic by id until one opens.
+    const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput" && d.deviceId);
+    for (const d of devs) {
+      try { return await navigator.mediaDevices.getUserMedia({ audio: { ...base, deviceId: { exact: d.deviceId } } }); } catch {}
+    }
+    throw e;
+  }
 }
 
 function micMessage(e) {

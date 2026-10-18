@@ -359,7 +359,12 @@ export function Settings({ onClose }) {
     const list = () => navigator.mediaDevices.enumerateDevices().then((d) => setMics(d.filter((x) => x.kind === "audioinput")));
     navigator.mediaDevices.getUserMedia({ audio: true })
       .then((st) => { st.getTracks().forEach((t) => t.stop()); setMicErr(""); return list(); })
-      .catch((e) => { setMicErr((e?.name || "Error") + ": " + (e?.message || "")); list().catch(() => {}); });
+      .catch((e) => {
+        list().then(() => navigator.mediaDevices.enumerateDevices()).then((d) => {
+          const n = d.filter((x) => x.kind === "audioinput").length;
+          setMicErr((e?.name || "Error") + ": " + (e?.message || "") + " (" + n + " mics seen)");
+        }).catch(() => setMicErr((e?.name || "Error") + ": " + (e?.message || "")));
+      });
   }, []);
 
   async function setAutostart(v) {
