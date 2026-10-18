@@ -388,6 +388,28 @@ fn main() {
                 })
                 .build(app)?;
 
+            // Always allow our own window to use the mic. Otherwise one old "deny"
+            // answer saved by WebView2 blocks every mic for good.
+            if let Some(w) = app.get_webview_window("main") {
+                let _ = w.with_webview(|wv| unsafe {
+                    use webview2_com::{Microsoft::Web::WebView2::Win32::*, PermissionRequestedEventHandler};
+                    if let Ok(core) = wv.controller().CoreWebView2() {
+                        let handler = PermissionRequestedEventHandler::create(Box::new(|_, args| {
+                            if let Some(a) = args {
+                                let mut kind = COREWEBVIEW2_PERMISSION_KIND::default();
+                                a.PermissionKind(&mut kind)?;
+                                if kind == COREWEBVIEW2_PERMISSION_KIND_MICROPHONE {
+                                    a.SetState(COREWEBVIEW2_PERMISSION_STATE_ALLOW)?;
+                                }
+                            }
+                            Ok(())
+                        }));
+                        let mut token = Default::default();
+                        let _ = core.add_PermissionRequested(&handler, &mut token);
+                    }
+                });
+            }
+
             if let Some(ov) = app.get_webview_window("overlay") {
                 make_no_activate(&ov);
                 let _ = ov.set_ignore_cursor_events(true);
