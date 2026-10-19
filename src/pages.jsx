@@ -535,15 +535,15 @@ export function Settings({ onClose }) {
               </select></label>
           </>}
           {tab === "shortcuts" && <div className="shortcuts">
-            <KeyPicker label="Push to talk (hold). Tap = hands-free" action="talk" s={s} up={up} />
+            <KeyPicker label="Push to talk (hold to record, release to insert)" action="talk" s={s} up={up} />
             <KeyPicker label="Hands-free (press to start / stop)" action="handsfree" s={s} up={up} />
             <KeyPicker label="Command mode / Ask AI (hold)" action="command" s={s} up={up} />
             <div><span>Cancel</span><span><kbd className="sm">Esc</kbd></span></div>
             <div className="row-split" style={{ border: 0 }}>
-              <button className="btn ghost" onClick={() => { up({ hotkeys: { talk: "Ctrl+Space", handsfree: "Ctrl+Shift+Space", command: "Alt+Shift+Space" } }); setTimeout(applyHotkeys, 50); }}>Reset to default</button>
+              <button className="btn ghost" onClick={() => { up({ hotkeys: { talk: "Ctrl+Space" } }); setTimeout(applyHotkeys, 50); }}>Use only Ctrl+Space</button>
               <button className="btn ghost" onClick={toggleHandsFree}>Test hands-free now</button>
               <button className="btn ghost" onClick={applyHotkeys}>Retry shortcuts</button>
-              <button className="btn ghost" onClick={() => { up({ hotkeys: { talk: "Ctrl+Alt+F9", handsfree: "Ctrl+Alt+F10", command: "Ctrl+Alt+F11" } }); setTimeout(applyHotkeys, 50); }}>Use alternate shortcuts</button>
+              <button className="btn ghost" onClick={() => { up({ hotkeys: { talk: "Ctrl+Alt+F9" } }); setTimeout(applyHotkeys, 50); }}>Use alternate shortcuts</button>
             </div>
             <p className="muted small">Command mode: select text, hold the key and say what to change. With nothing selected, ask any question and the answer gets typed.</p>
           </div>}
@@ -592,7 +592,7 @@ function KeyPicker({ label, action, s, up }) {
     <div>
       <span>{label}{err && <small className="danger" style={{ display: "block" }}>{err}</small>}</span>
       <button className={"keypick" + (listening ? " on" : "")} onClick={() => setListening(true)}>
-        {listening ? "Press keys…" : (s.hotkeys[action] || "").split("+").map((k, i) => <span key={i}>{i > 0 && " + "}<kbd className="sm">{k}</kbd></span>)}
+        {listening ? "Press keys…" : s.hotkeys[action] ? s.hotkeys[action].split("+").map((k, i) => <span key={i}>{i > 0 && " + "}<kbd className="sm">{k}</kbd></span>) : "Not set"}
       </button>
     </div>
   );
@@ -658,10 +658,10 @@ export function Help({ onClose }) {
         <li>Add a Groq or Deepgram key in <b>Settings → API key</b>, or enable offline mode. AI cleanup, commands, translation and summaries require Groq.</li>
         <li>Click into any text box in any app.</li>
         <li>Hold <kbd className="sm">{settings.hotkeys.talk}</kbd>, talk, let go. The text gets typed for you.</li>
-        <li>Tap <kbd className="sm">{settings.hotkeys.talk}</kbd> quickly to go hands-free. Tap again to finish.</li>
-        <li>Select text, hold <kbd className="sm">{settings.hotkeys.command}</kbd>, say “make this formal”.</li>
+        {settings.hotkeys.handsfree && <li>For hands-free recording, press <kbd className="sm">{settings.hotkeys.handsfree}</kbd> to start and again to finish.</li>}
+        {settings.hotkeys.command && <li>Select text, hold <kbd className="sm">{settings.hotkeys.command}</kbd>, say “make this formal”.</li>}
         <li>End with “press enter” to send. Say only “delete that” to undo the last dictation.</li>
-        <li>With nothing selected, hold <kbd className="sm">{settings.hotkeys.command}</kbd> and ask a question. The answer gets typed.</li>
+        {settings.hotkeys.command && <li>With nothing selected, hold <kbd className="sm">{settings.hotkeys.command}</kbd> and ask a question. The answer gets typed.</li>}
         <li>Closing the window keeps Murmur running in the tray (bottom-right of the taskbar).</li>
       </ol>
     </Modal>

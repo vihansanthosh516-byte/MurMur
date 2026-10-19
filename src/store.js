@@ -16,12 +16,12 @@ export const DEFAULTS = {
     smartFormat: true,
     keepInClipboard: false,
     autostart: false,
-    sttModel: "whisper-large-v3-turbo",
+    sttModel: "whisper-large-v3",
     llmModel: "openai/gpt-oss-20b",
     whisperMode: false,
     context: "",
     learn: true,
-    hotkeys: { talk: "Ctrl+Space", handsfree: "Ctrl+Shift+Space", command: "Alt+Shift+Space" },
+    hotkeys: { talk: "Ctrl+Space" },
     liveText: true,
     muteWhileRecording: false,
     voiceCommands: true,
@@ -53,9 +53,9 @@ export function get(key) {
     try { v = JSON.parse(localStorage.getItem("murmur:" + key)); } catch { v = null; }
     const d = DEFAULTS[key];
     cache[key] = v == null ? d : d && typeof d === "object" && !Array.isArray(d) ? { ...d, ...v } : v;
-    // v3: use the fast speech model (names are handled by the vocabulary hint).
+    // Keep the saved model choice when migrating older settings.
     if (key === "settings" && !(cache.settings.v >= 3)) {
-      cache.settings = { ...cache.settings, sttModel: "whisper-large-v3-turbo", v: 3 };
+      cache.settings = { ...cache.settings, v: 3 };
       setTimeout(() => set("settings", cache.settings));
     }
   }

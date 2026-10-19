@@ -421,18 +421,15 @@ export async function retry(item, blob) {
 }
 
 // ---------- hotkeys ----------
-let pressAt = 0;
 export function onHotkey(id, state) {
   const busy = live.state === "processing" || live.state === "starting";
   if (id === "cancel") { cancel(); return; }
   if (id === "talk") {
     if (state === "down") {
       if (live.mode === "handsfree" && session) return finish();
-      if (!session && !busy) { pressAt = Date.now(); startRecording("dictate"); }
+      if (!session && !busy) startRecording("dictate");
     } else if (live.mode === "dictate") {
-      // A quick tap (under 300 ms) switches to hands-free; holding = push-to-talk.
-      if (Date.now() - pressAt < 300) { if (session) session.mode = "handsfree"; update({ mode: "handsfree" }); }
-      else finish();
+      finish();
     }
   }
   if (id === "handsfree" && state === "down") {

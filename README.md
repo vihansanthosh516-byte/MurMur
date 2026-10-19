@@ -6,7 +6,7 @@ A Windows dictation app built with Tauri and React. Murmur has no subscription; 
 
 Add a Groq or Deepgram API key in Settings, or download an offline speech model. Groq also provides AI cleanup, commands, translation, and meeting summaries. Without Groq, dictation, dictionary replacements, snippets, and basic line breaks still work.
 
-The initial talk shortcut is `Ctrl+Space`; tap for hands-free recording or hold for push-to-talk. Use Settings → Shortcuts to change it. If another app owns a shortcut, retry after closing that app or choose **Use alternate shortcuts**. All key hints follow the saved shortcuts.
+The initial talk shortcut is `Ctrl+Space`: hold to record, then release to transcribe and insert. A quick tap never starts hands-free recording. Optional hands-free and command shortcuts can be set in Settings → Shortcuts. If another app owns a shortcut, retry after closing that app or choose **Use alternate shortcuts**. All key hints follow the saved shortcuts.
 
 Settings → General → **Test microphone** opens the selected microphone for two seconds and reports its signal level. It sends no audio to a provider.
 

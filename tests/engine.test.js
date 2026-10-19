@@ -23,12 +23,30 @@ test("hold released during mic startup never creates an orphan recorder", async 
   assert.equal(live.state, "idle"); assert.equal(mic.track.stopped, true); assert.equal(recorders.length, 0);
 });
 
-test("tap during slow startup retains hands-free mode", async () => {
+test("quick release during startup cancels instead of switching to hands-free", async () => {
   let resolve;
   navigator.mediaDevices.getUserMedia = () => new Promise((r) => { resolve = r; });
   onHotkey("talk", "down"); await until(() => resolve); onHotkey("talk", "up");
-  resolve(stream()); await until(() => live.state === "recording");
-  assert.equal(live.mode, "handsfree");
+  await until(() => live.state === "idle");
+  const mic = stream(); resolve(mic); await tick(20);
+  assert.equal(live.state, "idle"); assert.equal(mic.track.stopped, true);
+  assert.equal(recorders.length, 0);
+});
+
+test("quick release after recording starts stops the microphone without hands-free", async () => {
+  onHotkey("talk", "down"); await until(() => live.state === "recording");
+  onHotkey("talk", "up"); await until(() => live.state === "idle");
+  assert.ok(streams.every((s) => s.track.stopped));
+  assert.equal(get("history").length, 0);
+});
+
+test("holding talk records until release and then inserts the speech transcript", async () => {
+  globalThis.fetch = async () => new Response(JSON.stringify({ text: "Murmur microphone test, one two three." }));
+  onHotkey("talk", "down"); await until(() => live.state === "recording"); await tick(310);
+  assert.equal(live.state, "recording"); assert.equal(live.mode, "dictate");
+  onHotkey("talk", "up"); await until(() => live.state === "idle");
+  assert.equal(get("history")[0].status, "done");
+  assert.equal(document.activeElement.value.trim(), "Murmur microphone test, one two three.");
 });
 
 test("cleanup outage preserves audio, raw transcript and pasted words", async () => {

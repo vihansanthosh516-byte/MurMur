@@ -86,6 +86,7 @@ export default function App() {
                 <button className="link" onClick={() => setHideTaken(true)}>Close</button>
               </div>
             )}
+            {page !== "dictation" && live.state && live.state !== "idle" && <div style={{ margin: "16px 40px 0" }}><LiveBar live={live} /></div>}
             {/* Keep the meeting recorder mounted while navigating to other pages. */}
             <div hidden={page !== "notetaker"}><Notetaker /></div>
             {page === "dictation" ? <Dictation setModal={setModal} live={live} /> : Page ? <Page /> : null}
@@ -162,7 +163,7 @@ function Dictation({ setModal, live }) {
           <div className="empty">
             Hold <kbd className="sm">{settings.hotkeys.talk}</kbd> in any app and start talking. Let go and your words appear.
             <div className="muted small" style={{ marginTop: 8 }}>
-              Tap it quickly for hands-free mode. <kbd className="sm">{settings.hotkeys.command}</kbd> = command mode (edit selected text by voice). <kbd className="sm">Esc</kbd> cancels.
+              Release to stop and insert your words. <kbd className="sm">Esc</kbd> cancels.
             </div>
           </div>
         )}
