@@ -1,6 +1,9 @@
 // The dictation engine: hotkey -> record -> transcribe -> clean up -> paste.
-import { get, set, uid, wordCount, saveAudio } from "./store";
-import { transcribeOffline } from "./offline";
+import { get, set, uid, wordCount, saveAudio, reportError } from "./store.js";
+import { transcribeOffline } from "./offline.js";
+import { createCapture, startPreview } from "./capture.js";
+import { localFormat, replacePhrase } from "./text.js";
+import { request } from "./requests.js";
 
 export const IS_TAURI = !!window.__TAURI_INTERNALS__;
 
@@ -17,26 +20,29 @@ async function T() {
   }
   return tauri;
 }
-async function xfetch(url, opts) {
+async function xfetch(url, opts, control) {
   const t = await T();
-  return (t ? t.fetch : fetch)(url, opts);
+  return request(t ? t.fetch : fetch, url, opts, control);
 }
 
 // ---------- live state, shared with the UI ----------
 const subs = new Set();
-export const live = { state: "idle", mode: null, level: 0, error: "", startedAt: 0, partial: "", taken: [] };
+export const live = { state: "idle", mode: null, level: 0, error: "", notice: "", startedAt: 0, partial: "", taken: [] };
 function update(p) {
   Object.assign(live, p);
   subs.forEach((s) => s({ ...live }));
-  if (p.state === "idle") T().then((t) => t?.invoke("set_overlay", { visible: false }));
-  T().then((t) => t?.emit("ov", { state: live.state, mode: live.mode, level: live.level, error: live.error, partial: live.partial }));
+  if (p.state === "idle") native("set_overlay", { visible: false });
+  nativeEvent("ov", { state: live.state, mode: live.mode, level: live.level, error: live.error, partial: live.partial });
 }
 export function subscribe(fn) { subs.add(fn); fn({ ...live }); return () => subs.delete(fn); }
+const native = (command, args) => T().then((t) => t?.invoke(command, args)).catch((e) => reportError(command, e));
+const nativeEvent = (name, payload) => T().then((t) => t?.emit(name, payload)).catch((e) => reportError(name, e));
 
 // ---------- sounds ----------
 let actx;
 function beep(freq, ms = 70) {
   if (!get("settings").sounds) return;
+  try {
   actx ||= new AudioContext();
   const o = actx.createOscillator(), g = actx.createGain();
   o.frequency.value = freq; o.type = "sine";
@@ -44,94 +50,51 @@ function beep(freq, ms = 70) {
   g.gain.exponentialRampToValueAtTime(0.12, actx.currentTime + 0.01);
   g.gain.exponentialRampToValueAtTime(0.0001, actx.currentTime + ms / 1000);
   o.connect(g).connect(actx.destination); o.start(); o.stop(actx.currentTime + ms / 1000 + 0.02);
+  } catch (e) { reportError("sound effect", e); }
 }
 
 // ---------- recording ----------
-let rec = null; // {stream, recorder, chunks, ctx, raf}
-let selection = "";
-let peak = 0; // loudest mic level this recording; ~0 means the mic heard nothing
-let targetApp = "";
+let session = null;
+let lastOutputWindow = null;
 
 async function startRecording(mode) {
-  if (rec) return;
+  if (session || get("noteRec")) { if (get("noteRec")) fail("Stop the meeting recording before dictating."); return; }
   const s = get("settings");
-  peak = 0;
-  update({ state: "starting", mode, error: "", startedAt: Date.now(), partial: "" });
+  if (mode === "command" && !s.apiKey.trim()) return fail("Command mode needs a Groq API key. Add one in Settings → API key.");
+  if (s.translateTo && !s.apiKey.trim()) return fail("Translation needs a Groq API key. Add one or turn translation off.");
+  const job = { id: uid(), controller: new AbortController(), mode, peak: 0, mute: Promise.resolve(), element: document.activeElement };
+  session = job;
+  update({ state: "starting", mode, error: "", notice: "", startedAt: Date.now(), partial: "" });
+  native("set_cancel_key", { on: true });
   try {
     const t = await T();
-    targetApp = t ? await t.invoke("active_window_title").catch(() => "") : document.title;
-    if (mode === "command" && t) selection = await t.invoke("copy_selection").catch(() => "");
-    const stream = await openMic(s.micId);
-    const ctx = new AudioContext();
-    if (ctx.state === "suspended") await ctx.resume().catch(() => {});
-    const src = ctx.createMediaStreamSource(stream);
-    const gain = ctx.createGain();
-    gain.gain.value = s.whisperMode ? 3.5 : 1; // whisper mode: make quiet speech louder
-    const dest = ctx.createMediaStreamDestination();
-    src.connect(gain).connect(dest);
-    const recorder = new MediaRecorder(dest.stream, { mimeType: "audio/webm;codecs=opus" });
-    const chunks = [];
-    recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
-    recorder.start(250);
-    const an = ctx.createAnalyser(); an.fftSize = 512;
-    gain.connect(an);
-    const buf = new Uint8Array(an.fftSize);
-    rec = { stream, recorder, chunks, ctx };
-    rec.timer = setInterval(() => {
-      an.getByteTimeDomainData(buf);
-      let sum = 0; for (const v of buf) sum += ((v - 128) / 128) ** 2;
-      const level = Math.min(1, Math.sqrt(sum / buf.length) * 4);
-      peak = Math.max(peak, level);
-      update({ level });
-    }, 50);
+    const target = t ? await t.invoke("active_window") : { title: document.title, id: "" };
+    job.targetApp = target.title;
+    job.windowId = target.id;
+    job.selection = mode === "command" && t ? await t.invoke("copy_selection", { expectedWindow: target.id }) : "";
+    job.controller.signal.throwIfAborted();
+    job.capture = await createCapture({ ...s, signal: job.controller.signal,
+      onLevel: (level) => { job.peak = Math.max(job.peak, level); if (session === job && !job.finishing) update({ level }); },
+      onError: (e) => { if (session === job) { cancel().then(() => fail(e.message)); } },
+    });
+    if (session !== job || job.controller.signal.aborted) { await job.capture.stop(); return; }
     beep(880);
-    update({ state: "recording", startedAt: Date.now() });
+    update({ state: "recording", mode: job.mode, startedAt: job.capture.startedAt });
     // Safety: never record forever (for example if a key-up got lost).
-    const me = rec;
-    rec.maxTimer = setTimeout(() => { if (rec === me) finish(); }, 6 * 60 * 1000);
+    job.maxTimer = setTimeout(() => { if (session === job) finish(); }, 6 * 60 * 1000);
     // Mute speakers after the start beep so music isn't picked up.
-    if (t && s.muteWhileRecording) setTimeout(() => rec && t.invoke("set_mute", { on: true }).catch(() => {}), 150);
-    // Live text: re-transcribe what we have so far every 2 s and show it in the pop-up.
+    if (t && s.muteWhileRecording) job.muteTimer = setTimeout(() => {
+      if (session === job && !job.finishing) { job.muteRequested = true; job.mute = t.invoke("set_mute", { on: true }).catch((e) => reportError("mute speakers", e)); }
+    }, 150);
     if (s.liveText && !s.offline && mode !== "command") {
-      let busy = false;
-      rec.live = setInterval(async () => {
-        if (busy || !rec || peak < 0.04) return;
-        busy = true;
-        const mine = rec;
-        try {
-          const txt = await transcribe(new Blob(mine.chunks, { type: "audio/webm" }));
-          if (rec === mine && !/^(thank you|you)[.!]*$/i.test(txt)) update({ partial: txt });
-        } catch {}
-        busy = false;
-      }, 2000);
+      job.stopPreview = startPreview(job.capture.stream, (blob, control) => job.peak < 0.01 ? Promise.resolve("") : transcribe(blob, control),
+        (partial) => { if (session === job && !job.finishing) update({ partial }); },
+        (e) => { reportError("live preview", e); if (session === job) update({ notice: "Live preview is unavailable. Final transcription still works." }); });
     }
-    t?.invoke("set_overlay", { visible: true });
-    t?.invoke("set_cancel_key", { on: true });
+    native("set_overlay", { visible: true });
   } catch (e) {
-    fail(micMessage(e));
-  }
-}
-
-// Open the chosen mic. If it is gone (unplugged), use the default mic instead.
-async function openMic(micId) {
-  const base = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
-  if (micId && micId !== "default") {
-    try {
-      return await navigator.mediaDevices.getUserMedia({ audio: { ...base, deviceId: { exact: micId } } });
-    } catch (e) {
-      if (e.name !== "OverconstrainedError" && e.name !== "NotFoundError") throw e;
-    }
-  }
-  try {
-    return await navigator.mediaDevices.getUserMedia({ audio: base });
-  } catch (e) {
-    if (e.name !== "NotFoundError") throw e;
-    // Windows default mic missing: try every mic by id until one opens.
-    const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === "audioinput" && d.deviceId);
-    for (const d of devs) {
-      try { return await navigator.mediaDevices.getUserMedia({ audio: { ...base, deviceId: { exact: d.deviceId } } }); } catch {}
-    }
-    throw e;
+    await releaseRecording(job);
+    if (session === job) { session = null; native("set_cancel_key", { on: false }); if (e.name !== "AbortError") fail(micMessage(e)); }
   }
 }
 
@@ -143,38 +106,35 @@ function micMessage(e) {
   return "Microphone error: " + (e?.message || n || e);
 }
 
-function stopRecording() {
-  return new Promise((res) => {
-    if (!rec) return res(null);
-    const r = rec; rec = null;
-    clearInterval(r.timer);
-    clearInterval(r.live);
-    clearTimeout(r.maxTimer);
-    unmute();
-    r.recorder.onstop = () => {
-      r.stream.getTracks().forEach((x) => x.stop());
-      r.ctx.close();
-      res(new Blob(r.chunks, { type: "audio/webm" }));
-    };
-    r.recorder.stop();
-    T().then((t) => t?.invoke("set_cancel_key", { on: false }));
-  });
+async function releaseRecording(job) {
+  clearTimeout(job.maxTimer);
+  clearTimeout(job.muteTimer);
+  job.stopPreview?.();
+  try { return await job.capture?.stop(); }
+  finally {
+    await job.mute;
+    if (job.muteRequested) { job.muteRequested = false; await native("set_mute", { on: false }); }
+  }
 }
 
 function fail(msg) {
+  reportError("dictation", msg);
   update({ state: "error", error: msg, level: 0 });
   beep(220, 160);
-  setTimeout(() => { if (live.state === "error") update({ state: "idle", mode: null }); }, 3500);
 }
 
 export async function cancel() {
-  await stopRecording();
+  const job = session;
+  if (job) {
+    job.controller.abort();
+    try { await releaseRecording(job); } catch (e) { reportError("stop recording", e); }
+    if (session !== job) return;
+    session = null;
+    if (get("history").some((h) => h.id === job.id)) patchHistory(job.id, { status: "cancelled", error: "Cancelled. Audio and any transcript are saved." });
+  }
+  native("set_cancel_key", { on: false });
   beep(330);
-  update({ state: "idle", mode: null, level: 0 });
-}
-
-function unmute() {
-  if (get("settings").muteWhileRecording) T().then((t) => t?.invoke("set_mute", { on: false }).catch(() => {}));
+  update({ state: "idle", mode: null, level: 0, error: "", partial: "" });
 }
 
 // ---------- learning from your dictations ----------
@@ -184,23 +144,25 @@ const COMMON = new Set("about above after again against because before being bel
 // and longer uncommon words that show up at least twice.
 export function learnedWords(limit = 40) {
   const counts = new Map();
-  for (const h of get("history").slice(0, 400)) {
+  for (const h of get("history").filter((h) => h.corrected && h.mode !== "command").slice(0, 400)) {
     const toks = h.text.match(/[\p{L}][\p{L}'-]*/gu) || [];
     toks.forEach((w, i) => {
       const lower = w.toLowerCase();
       const name = i > 0 && /^\p{Lu}/u.test(w) && w !== "I";
       if (COMMON.has(lower) || (!name && w.length < 5)) return;
-      const key = name ? w : lower;
-      counts.set(key, (counts.get(key) || 0) + 1);
+      const entry = counts.get(lower) || { word: lower, count: 0 };
+      entry.count++;
+      if (name) entry.word = w;
+      counts.set(lower, entry);
     });
   }
-  return [...counts].filter(([, n]) => n >= 2).sort((a, b) => b[1] - a[1]).slice(0, limit).map(([w]) => w);
+  return [...counts.values()].filter((entry) => entry.count >= 2).sort((a, b) => b.count - a.count).slice(0, limit).map((entry) => entry.word);
 }
 
 // A few of your recent dictations, so the cleanup matches how you write.
 function styleExamples(app) {
   const cat = categoryFor(app || "");
-  return get("history").filter((h) => h.mode !== "command" && categoryFor(h.app || "") === cat && h.words >= 6).slice(0, 4).map((h) => "- " + h.text.slice(0, 240));
+  return get("history").filter((h) => h.corrected && h.mode !== "command" && categoryFor(h.app || "") === cat && h.words >= 6).slice(0, 4).map((h) => "- " + h.text.slice(0, 240));
 }
 
 // ---------- Groq ----------
@@ -210,12 +172,18 @@ function key() {
   return k;
 }
 
-export async function transcribe(blob) {
+export async function transcribe(blob, control = {}) {
+  control.signal?.throwIfAborted();
   const s = get("settings");
-  if (s.offline) return transcribeOffline(blob, s.offlineModel, s.language);
-  if (s.deepgramKey && s.deepgramKey.trim()) return transcribeDeepgram(blob, s);
+  if (s.offline) {
+    const text = await transcribeOffline(blob, s.offlineModel, s.language);
+    control.signal?.throwIfAborted();
+    return text;
+  }
+  if (s.deepgramKey && s.deepgramKey.trim()) return transcribeDeepgram(blob, s, control);
+  if (blob.size > 24 * 1024 * 1024) throw new Error("This clip is too large for Groq. Download the saved audio or use offline transcription.");
   const fd = new FormData();
-  fd.append("file", new File([blob], "audio.webm", { type: "audio/webm" }));
+  fd.append("file", new File([blob], blob.type.includes("mp4") ? "audio.mp4" : "audio.webm", { type: blob.type || "audio/webm" }));
   fd.append("model", s.sttModel);
   fd.append("response_format", "json");
   fd.append("temperature", "0");
@@ -226,25 +194,25 @@ export async function transcribe(blob) {
   if (s.language !== "auto") fd.append("language", s.language);
   const r = await xfetch("https://api.groq.com/openai/v1/audio/transcriptions", {
     method: "POST", headers: { Authorization: "Bearer " + key() }, body: fd,
-  });
+  }, control);
   if (!r.ok) throw new Error("Transcribe failed (" + r.status + "): " + (await r.text()).slice(0, 200));
   return ((await r.json()).text || "").trim();
 }
 
 // Deepgram Nova-3: fast and accurate. Names go in as key terms.
-async function transcribeDeepgram(blob, s) {
+async function transcribeDeepgram(blob, s, control) {
   const words = [...new Set([s.name, ...get("dictionary").map((d) => d.word), ...(s.learn ? learnedWords() : [])].filter(Boolean))].slice(0, 100);
   const q = new URLSearchParams({ model: "nova-3", smart_format: "true", punctuate: "true", language: s.language === "auto" ? "multi" : s.language });
   words.forEach((w) => q.append("keyterm", w));
   const r = await xfetch("https://api.deepgram.com/v1/listen?" + q, {
-    method: "POST", headers: { Authorization: "Token " + s.deepgramKey.trim(), "Content-Type": "audio/webm" }, body: blob,
-  });
+    method: "POST", headers: { Authorization: "Token " + s.deepgramKey.trim(), "Content-Type": blob.type || "audio/webm" }, body: blob,
+  }, control);
   if (!r.ok) throw new Error("Deepgram failed (" + r.status + "): " + (await r.text()).slice(0, 200));
   const j = await r.json();
   return (j.results?.channels?.[0]?.alternatives?.[0]?.transcript || "").trim();
 }
 
-export async function chat(system, user) {
+export async function chat(system, user, control = {}) {
   const r = await xfetch("https://api.groq.com/openai/v1/chat/completions", {
     method: "POST",
     headers: { Authorization: "Bearer " + key(), "Content-Type": "application/json" },
@@ -252,9 +220,13 @@ export async function chat(system, user) {
       model: llmModel(), temperature: 0.2, reasoning_effort: "low", include_reasoning: false, max_completion_tokens: 2048,
       messages: [{ role: "system", content: system }, { role: "user", content: user }],
     }),
-  });
+  }, control);
   if (!r.ok) throw new Error("AI failed (" + r.status + "): " + (await r.text()).slice(0, 200));
-  return (await r.json()).choices[0].message.content.trim();
+  const result = (await r.json()).choices?.[0];
+  if (result?.finish_reason === "length") throw new Error("AI response was cut short. Your original transcript is saved.");
+  const text = result?.message?.content;
+  if (typeof text !== "string" || !text.trim()) throw new Error("AI returned no text. Your original transcript is saved.");
+  return text.trim();
 }
 
 export function categoryFor(title) {
@@ -278,12 +250,13 @@ const STYLE_TEXT = {
   "very casual": "Very casual: all lowercase, minimal punctuation, like texting.",
 };
 
-export async function cleanup(raw, app) {
+export async function cleanup(raw, app, control = {}) {
   const s = get("settings");
-  let text = raw;
+  let text = localFormat(raw, s.smartFormat);
   const canAI = !!s.apiKey.trim();
   // Very short phrases don't need the AI cleanup step (saves a round trip).
   const short = wordCount(raw) <= 3 && !s.translateTo;
+  if (s.translateTo && !canAI) throw new Error("Translation requires a Groq API key");
   if ((s.smartFormat || s.translateTo) && raw && canAI && !short) {
     const style = styleFor(app);
     const dict = [...(s.name ? [{ word: s.name }] : []), ...get("dictionary")];
@@ -297,22 +270,21 @@ ${s.context.trim() ? "About the speaker (use it to spell their terms right, neve
 ${dict.length ? "Always spell these exactly: " + dict.map((d) => d.word).join(", ") : ""}
 ${s.translateTo ? "Finally, translate the cleaned text into " + s.translateTo + ". Output only the translation." : ""}
 ${s.smartFormat ? "" : "Do not clean or reformat; only translate."}`,
-      raw
+      raw, control
     );
   }
   for (const d of get("dictionary")) {
-    if (d.replace && d.word) text = text.replace(new RegExp("\\b" + escapeRe(d.replace) + "\\b", "gi"), d.word);
+    if (d.confirmed && d.replace && d.word) text = replacePhrase(text, d.replace, d.word);
   }
   return applySnippets(text);
 }
 
-const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 export function applySnippets(text) {
-  const norm = (s) => s.toLowerCase().replace(/[^\w\s]/g, "").trim();
+  const norm = (s) => s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").trim();
   for (const sn of get("snippets")) {
     if (!sn.trigger) continue;
     if (norm(text) === norm(sn.trigger)) return sn.text;
-    text = text.replace(new RegExp("\\b" + escapeRe(sn.trigger) + "\\b[.,!?]?", "gi"), sn.text);
+    text = replacePhrase(text, sn.trigger, sn.text, true);
   }
   return text;
 }
@@ -330,82 +302,129 @@ function voiceCommands(raw) {
 
 // ---------- output ----------
 export const isTerminal = (title) => /terminal|powershell|command prompt|cmd\.exe|windows terminal|wsl|ubuntu|bash|zsh|claude code|warp|alacritty|wezterm|mintty|conemu/i.test(title);
-async function output(text) {
+async function output(text, job) {
+  job.controller.signal.throwIfAborted();
   const t = await T();
-  if (t) await t.invoke("paste_text", { text, keepInClipboard: get("settings").keepInClipboard, typeIt: isTerminal(targetApp) });
+  job.controller.signal.throwIfAborted();
+  if (t) await t.invoke("paste_text", { text, keepInClipboard: get("settings").keepInClipboard, typeIt: isTerminal(job.targetApp), expectedWindow: job.windowId });
   else {
-    const el = document.activeElement;
+    const el = job.element;
+    if (el !== document.activeElement) throw new Error("Focus changed. Copy the saved text from history.");
     if (el && (el.tagName === "TEXTAREA" || el.tagName === "INPUT")) {
       el.setRangeText(text + " ", el.selectionStart, el.selectionEnd, "end");
       el.dispatchEvent(new Event("input", { bubbles: true }));
-    } else await navigator.clipboard.writeText(text).catch(() => {});
+    } else await navigator.clipboard.writeText(text);
   }
+  lastOutputWindow = job.windowId;
+}
+
+const patchHistory = (id, patch) => set("history", (items) => items.map((h) => h.id === id ? { ...h, ...patch } : h));
+async function commandText(raw, sourceText, control) {
+  return sourceText
+    ? chat("You edit text. Apply the user's instruction to the TEXT. Output ONLY the new text.", `INSTRUCTION: ${raw}\n\nTEXT:\n${sourceText}`, control)
+    : chat("You are a helpful assistant. The user asked by voice. Answer clearly and briefly in plain text, ready to paste. Output only the answer.", raw, control);
 }
 
 async function finish() {
-  const mode = live.mode;
-  const secs = (Date.now() - live.startedAt) / 1000;
-  const blob = await stopRecording();
-  beep(660);
-  if (!blob || secs < 0.4) return cancel();
-  if (peak < 0.04) return fail("No sound. Check Settings → Microphone");
+  const job = session;
+  if (!job || job.finishing) return;
+  // A released hold must not start recording when a delayed mic request completes.
+  if (!job.capture) return cancel();
+  job.finishing = true;
+  const { mode } = job;
+  const secs = (Date.now() - job.capture.startedAt) / 1000;
   update({ state: "processing", level: 0 });
   try {
-    const raw = await transcribe(blob);
-    // Whisper invents these on silent audio.
-    if (!raw || /^(thank you|thanks for watching|you|bye)[.!]*$/i.test(raw.trim())) return fail("Didn't catch that. Hold Ctrl+Space while you talk");
+    const blob = await releaseRecording(job);
+    job.controller.signal.throwIfAborted();
+    beep(660);
+    if (!blob?.size || secs < 0.25) return cancel();
+    const item = { id: job.id, ts: Date.now(), text: "", raw: "", words: 0, secs, app: job.targetApp, flagged: false, mode, sourceText: job.selection, status: "transcribing" };
+    set("history", (h) => [item, ...h]);
+    try { await saveAudio(job.id, blob); }
+    catch (e) { reportError("save dictation audio", e); update({ notice: "Audio could not be saved. Keep the transcript before closing the app." }); }
+    job.controller.signal.throwIfAborted();
+    if (job.peak < 0.01) throw new Error("No sound detected. Audio is saved; select the correct microphone in Settings.");
+    const control = { signal: job.controller.signal };
+    const raw = await transcribe(blob, control);
+    job.controller.signal.throwIfAborted();
+    patchHistory(job.id, { raw, text: raw, words: wordCount(raw), status: "processing" });
+    if (!raw) throw new Error("No speech detected. Audio is saved; retry from history.");
     let text;
     const vc = mode === "command" ? { text: raw } : voiceCommands(raw);
     if (vc.undo) {
-      await (await T())?.invoke("press_key", { name: "undo" });
+      if (lastOutputWindow === null || lastOutputWindow !== job.windowId) throw new Error("Undo is only available in the window of your last dictation.");
+      await (await T())?.invoke("press_key", { name: "undo", expectedWindow: job.windowId });
+      patchHistory(job.id, { text: "", words: 0, status: "done" });
+      session = null;
+      native("set_cancel_key", { on: false });
       update({ state: "idle", mode: null, partial: "" });
       return;
     }
     if (mode === "command") {
-      text = selection
-        ? await chat("You edit text. Apply the user's instruction to the TEXT. Output ONLY the new text.", `INSTRUCTION: ${raw}\n\nTEXT:\n${selection}`)
-        : await chat("You are a helpful assistant. The user asked by voice. Answer clearly and briefly in plain text, ready to paste. Output only the answer.", raw);
+      text = await commandText(raw, job.selection, control);
     } else {
-      text = vc.text ? await cleanup(vc.text, targetApp) : "";
+      try { text = vc.text ? await cleanup(vc.text, job.targetApp, control) : ""; }
+      catch (e) {
+        job.controller.signal.throwIfAborted();
+        if (get("settings").translateTo) throw e;
+        reportError("cleanup fallback", e);
+        job.fallback = true;
+        text = applySnippets(localFormat(vc.text, get("settings").smartFormat));
+        const notice = "Cleanup failed; original transcript was kept. " + e.message;
+        patchHistory(job.id, { warning: notice });
+        update({ notice });
+      }
     }
-    if (text) await output(text);
-    if (vc.enter) await (await T())?.invoke("press_key", { name: "enter" });
-    const id = uid();
-    saveAudio(id, blob).catch(() => {});
-    set("history", (h) => [{ id, ts: Date.now(), text, raw, words: wordCount(text), secs, app: targetApp, flagged: false, mode }, ...h]);
+    job.controller.signal.throwIfAborted();
+    patchHistory(job.id, { text, words: wordCount(text), status: "ready" });
+    if (text) await output(text, job);
+    job.controller.signal.throwIfAborted();
+    if (vc.enter && !job.fallback) await (await T())?.invoke("press_key", { name: "enter", expectedWindow: job.windowId });
+    patchHistory(job.id, { status: "done", error: "" });
+    session = null;
+    native("set_cancel_key", { on: false });
     update({ state: "idle", mode: null, partial: "" });
   } catch (e) {
+    if (session !== job || job.controller.signal.aborted) return;
+    patchHistory(job.id, { status: "error", error: e.message });
+    session = null;
+    native("set_cancel_key", { on: false });
     fail(e.message);
   }
 }
 
 // Re-run a saved clip (history menu: "Retry").
 export async function retry(item, blob) {
-  const raw = await transcribe(blob);
-  const text = await cleanup(raw, item.app || "");
-  set("history", (h) => h.map((x) => (x.id === item.id ? { ...x, raw, text, words: wordCount(text) } : x)));
+  try {
+    const raw = await transcribe(blob);
+    patchHistory(item.id, { raw });
+    if (!raw) throw new Error("No speech detected in this clip");
+    const text = item.mode === "command" ? await commandText(raw, item.sourceText) : await cleanup(raw, item.app || "");
+    patchHistory(item.id, { raw, text, words: wordCount(text), status: "done", error: "", warning: "", corrected: false });
+  } catch (e) { patchHistory(item.id, { error: e.message, status: "error" }); reportError("retry", e); throw e; }
 }
 
 // ---------- hotkeys ----------
 let pressAt = 0;
-function onHotkey(id, state) {
+export function onHotkey(id, state) {
   const busy = live.state === "processing" || live.state === "starting";
-  if (id === "cancel") { if (rec) cancel(); return; }
+  if (id === "cancel") { cancel(); return; }
   if (id === "talk") {
     if (state === "down") {
-      if (live.mode === "handsfree" && rec) return finish();
-      if (!rec && !busy) { pressAt = Date.now(); startRecording("dictate"); }
+      if (live.mode === "handsfree" && session) return finish();
+      if (!session && !busy) { pressAt = Date.now(); startRecording("dictate"); }
     } else if (live.mode === "dictate") {
       // A quick tap (under 300 ms) switches to hands-free; holding = push-to-talk.
-      if (Date.now() - pressAt < 300) update({ mode: "handsfree" });
+      if (Date.now() - pressAt < 300) { if (session) session.mode = "handsfree"; update({ mode: "handsfree" }); }
       else finish();
     }
   }
   if (id === "handsfree" && state === "down") {
-    if (rec) finish(); else if (!busy) startRecording("handsfree");
+    if (session && !session.finishing) finish(); else if (!busy) startRecording("handsfree");
   }
   if (id === "command") {
-    if (state === "down" && !rec && !busy) startRecording("command");
+    if (state === "down" && !session && !busy) startRecording("command");
     if (state === "up" && live.mode === "command") finish();
   }
 }
@@ -417,10 +436,13 @@ export async function initEngine() {
     await applyHotkeys();
   } else {
     // Browser preview: hotkeys only work while this tab is focused.
-    const map = (e) => (e.code === "Space" && e.ctrlKey ? (e.shiftKey ? "handsfree" : e.altKey ? "command" : "talk") : e.code === "Escape" ? "cancel" : null);
+    const map = (e) => e.code === "Escape" ? "cancel" : Object.entries(get("settings").hotkeys).find(([, combo]) => {
+      const keys = combo.split("+");
+      return !!e.ctrlKey === keys.includes("Ctrl") && !!e.altKey === keys.includes("Alt") && !!e.shiftKey === keys.includes("Shift") && !!e.metaKey === keys.includes("Super") && keys.at(-1) === e.code.replace(/^Key|^Digit/g, "");
+    })?.[0];
     addEventListener("keydown", (e) => { const id = map(e); if (id && !e.repeat) { e.preventDefault(); onHotkey(id, "down"); } });
     addEventListener("keyup", (e) => {
-      if (e.code === "Space" || e.key === "Control") {
+      if (["Space", "Control", "Alt", "Shift", "Meta"].includes(e.key) || Object.values(get("settings").hotkeys).some((combo) => combo.split("+").at(-1) === e.code.replace(/^Key|^Digit/g, ""))) {
         if (live.mode === "dictate") onHotkey("talk", "up");
         if (live.mode === "command") onHotkey("command", "up");
       }

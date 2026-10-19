@@ -1,7 +1,8 @@
 import { useEffect, useRef, useState } from "react";
 import Icon from "./icons";
-import { useStore, uid, dayKey, stats, wordCount, set as setKey } from "./store";
-import { IS_TAURI, transcribe, chat, categoryFor, toggleHandsFree, applyHotkeys } from "./engine";
+import { useStore, uid, dayKey, stats, wordCount, set as setKey, get, saveAudio, loadAudio, deleteAudio, createBackup, restoreBackup, clearHistory, reportError } from "./store";
+import { createCapture, openMic } from "./capture.js";
+import { IS_TAURI, transcribe, chat, categoryFor, toggleHandsFree, applyHotkeys, live } from "./engine";
 import { OFFLINE_MODELS, loadOffline } from "./offline";
 import { Toggle } from "./App";
 
@@ -33,7 +34,7 @@ function PageHead({ title, sub, children }) {
 export function Dictionary() {
   const [list, setList] = useStore("dictionary");
   const [word, setWord] = useState(""), [rep, setRep] = useState("");
-  const add = () => { if (!word.trim()) return; setList([{ id: uid(), word: word.trim(), replace: rep.trim() }, ...list]); setWord(""); setRep(""); };
+  const add = () => { if (!word.trim()) return; setList([{ id: uid(), word: word.trim(), replace: rep.trim(), confirmed: true }, ...list]); setWord(""); setRep(""); };
   return (
     <div className="page">
       <PageHead title="Dictionary" sub="Teach Murmur names, jargon and words it gets wrong." />
@@ -48,6 +49,7 @@ export function Dictionary() {
           <div key={d.id} className="list-row">
             <b>{d.word}</b>
             {d.replace && <span className="muted">replaces “{d.replace}”</span>}
+            {d.replace && !d.confirmed && <button className="btn ghost" onClick={() => setList(list.map((x) => x.id === d.id ? { ...x, confirmed: true } : x))}>Confirm replacement</button>}
             <button className="icon-btn" onClick={() => setList(list.filter((x) => x.id !== d.id))}><Icon name="trash" size={17} /></button>
           </div>
         ))}
@@ -249,6 +251,7 @@ export function Insights() {
 // ---------------- Notetaker ----------------
 export function Notetaker() {
   const [notes, setNotes] = useStore("notes");
+  const [settings] = useStore("settings");
   const [rec, setRec] = useState(null);
   const [secs, setSecs] = useState(0);
   const [sys, setSys] = useState(false);
@@ -257,43 +260,64 @@ export function Notetaker() {
   const r = useRef();
 
   useEffect(() => { if (!rec) return; const t = setInterval(() => setSecs((Date.now() - rec.start) / 1000), 500); return () => clearInterval(t); }, [rec]);
+  useEffect(() => () => {
+    const job = r.current;
+    if (!job) return;
+    job.controller.abort();
+    job.capture?.stop().then((blob) => saveAudio(job.id, blob)).catch((e) => reportError("stop meeting", e));
+    setKey("noteRec", false);
+  }, []);
 
   async function start() {
+    if (r.current || get("noteRec")) return;
+    if (["starting", "recording", "processing"].includes(live.state)) return alert("Finish dictation before recording a meeting.");
+    const job = { id: uid(), controller: new AbortController() };
+    r.current = job;
+    setBusy("Starting microphone…");
+    setKey("noteRec", true);
     try {
-      const mic = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const tracks = [mic];
-      const ctx = new AudioContext(), dest = ctx.createMediaStreamDestination();
-      ctx.createMediaStreamSource(mic).connect(dest);
-      if (sys) {
-        const d = await navigator.mediaDevices.getDisplayMedia({ video: true, audio: true });
-        if (d.getAudioTracks().length) ctx.createMediaStreamSource(new MediaStream(d.getAudioTracks())).connect(dest);
-        tracks.push(d);
-      }
-      const mr = new MediaRecorder(dest.stream, { mimeType: "audio/webm;codecs=opus", audioBitsPerSecond: 32000 });
-      const chunks = []; mr.ondataavailable = (e) => chunks.push(e.data); mr.start(1000);
-      r.current = { mr, chunks, tracks, ctx };
-      setSecs(0); setRec({ start: Date.now() }); setKey("noteRec", true);
-    } catch (e) { alert("Could not start: " + e.message); }
+      job.capture = await createCapture({ ...settings, systemAudio: sys, audioBitsPerSecond: 32000, signal: job.controller.signal,
+        onError: (e) => { reportError("meeting recorder", e); stop(); },
+      });
+      setNotes((n) => [{ id: job.id, ts: Date.now(), title: "Meeting " + new Date().toLocaleString(), transcript: "", summary: "", secs: 0 }, ...n]);
+      setOpen(job.id);
+      setSecs(0); setRec({ start: job.capture.startedAt });
+    } catch (e) {
+      r.current = null; setKey("noteRec", false);
+      if (e.name !== "AbortError") { reportError("start meeting", e); alert("Could not start: " + e.message); }
+    } finally { setBusy(""); }
   }
 
   async function stop() {
-    const { mr, chunks, tracks, ctx } = r.current;
-    const duration = secs;
-    await new Promise((res) => { mr.onstop = res; mr.stop(); });
-    tracks.forEach((s) => s.getTracks().forEach((t) => t.stop())); ctx.close();
-    setRec(null); setKey("noteRec", false);
-    const blob = new Blob(chunks, { type: "audio/webm" });
-    const id = uid();
-    const note = { id, ts: Date.now(), title: "Meeting " + new Date().toLocaleString(), transcript: "", summary: "", secs: duration };
-    setNotes((n) => [note, ...n]); setOpen(id);
+    const job = r.current;
+    if (!job?.capture || job.stopping) return;
+    job.stopping = true;
+    setBusy("Saving audio…");
+    try {
+      const duration = (Date.now() - job.capture.startedAt) / 1000;
+      const blob = await job.capture.stop();
+      setNotes((n) => n.map((x) => x.id === job.id ? { ...x, secs: duration } : x));
+      try { await saveAudio(job.id, blob); }
+      catch (e) { reportError("save meeting audio", e); setNotes((n) => n.map((x) => x.id === job.id ? { ...x, warning: "Audio is kept in memory only. Download it before closing the app." } : x)); }
+      setRec(null); setKey("noteRec", false);
+      await transcribeNote(job.id, blob);
+    } catch (e) {
+      setNotes((n) => n.map((x) => x.id === job.id ? { ...x, error: e.message } : x));
+      reportError("save meeting", e); alert(e.message);
+    } finally { r.current = null; setRec(null); setKey("noteRec", false); setBusy(""); }
+  }
+
+  async function transcribeNote(id, blob) {
     setBusy("Transcribing…");
     try {
-      if (blob.size > 24 * 1024 * 1024) throw new Error("Recording is over 25 MB (about 1.5 hours). Groq can't take it in one piece.");
+      if (!blob) throw new Error("No saved audio for this note");
       const transcript = await transcribe(blob);
-      setNotes((n) => n.map((x) => (x.id === id ? { ...x, transcript } : x)));
-      await summarize(id, transcript);
-    } catch (e) { alert(e.message); }
-    setBusy("");
+      setNotes((n) => n.map((x) => x.id === id ? { ...x, transcript, error: "" } : x));
+      if (get("settings").apiKey.trim() && transcript) await summarize(id, transcript);
+    } catch (e) {
+      setNotes((n) => n.map((x) => x.id === id ? { ...x, error: e.message } : x));
+      reportError("transcribe meeting", e);
+    } finally { setBusy(""); }
   }
 
   async function summarize(id, transcript) {
@@ -313,7 +337,7 @@ export function Notetaker() {
         {!rec && <label className="small muted check"><input type="checkbox" checked={sys} onChange={(e) => setSys(e.target.checked)} /> Include system audio</label>}
         {!rec && <button className="btn ghost" onClick={() => { const id = uid(); setNotes([{ id, ts: Date.now(), title: "New note", transcript: "", summary: "", secs: 0 }, ...notes]); setOpen(id); }}><Icon name="plus" size={16} /> New note</button>}
         {rec ? <button className="btn rec" onClick={stop}><Icon name="stop" size={16} /> Stop · {mm(secs)}</button>
-          : <button className="btn" onClick={start}><Icon name="record" size={16} /> Start recording</button>}
+          : <button className="btn" disabled={!!busy} onClick={start}><Icon name="record" size={16} /> Start recording</button>}
       </PageHead>
       {busy && <div className="livebar processing"><span className="dot" />{busy}</div>}
       <div className="notes">
@@ -329,13 +353,18 @@ export function Notetaker() {
           <div className="card note-view">
             <input className="note-title" value={note.title} onChange={(e) => setNotes(notes.map((x) => (x.id === note.id ? { ...x, title: e.target.value } : x)))} />
             <h3 className="section">AI notes</h3>
+            {note.error && <p role="alert" className="danger">{note.error}</p>}
+            {note.warning && <p className="small danger">{note.warning}</p>}
+            {!settings.apiKey.trim() && <p className="small muted">Transcription works without Groq. Add a Groq API key for AI summaries.</p>}
             <div className="pre">{note.summary || <span className="muted">No summary yet.</span>}</div>
             <h3 className="section">Transcript</h3>
             <textarea rows={10} value={note.transcript} placeholder="Transcript (you can paste one here)" onChange={(e) => setNotes(notes.map((x) => (x.id === note.id ? { ...x, transcript: e.target.value } : x)))} />
             <div className="modal-actions">
-              <button className="btn ghost danger" onClick={() => { setNotes(notes.filter((x) => x.id !== note.id)); setOpen(null); }}><Icon name="trash" size={16} /> Delete</button>
+              <button className="btn ghost danger" disabled={!!busy || !!rec} onClick={async () => { try { await deleteAudio(note.id); setNotes((n) => n.filter((x) => x.id !== note.id)); setOpen(null); } catch (e) { alert(e.message); } }}><Icon name="trash" size={16} /> Delete</button>
+              <button className="btn ghost" disabled={!!busy || !!rec} onClick={async () => { const blob = await loadAudio(note.id); if (!blob) return alert("No saved audio"); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = `meeting-${note.id}.${blob.type.includes("mp4") ? "mp4" : "webm"}`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000); }}>Download audio</button>
+              <button className="btn ghost" disabled={!!busy || !!rec} onClick={async () => transcribeNote(note.id, await loadAudio(note.id))}>Retry transcription</button>
               <button className="btn ghost" onClick={() => { const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([`# ${note.title}\n\n${note.summary}\n\n## Transcript\n${note.transcript}`])); a.download = note.title + ".md"; a.click(); }}>Export</button>
-              <button className="btn" disabled={!note.transcript || !!busy} onClick={() => summarize(note.id, note.transcript).catch((e) => { alert(e.message); setBusy(""); })}>Summarize</button>
+              <button className="btn" disabled={!note.transcript || !!busy || !settings.apiKey.trim()} onClick={() => summarize(note.id, note.transcript).catch((e) => { alert(e.message); setBusy(""); })}>Summarize</button>
             </div>
           </div>
         )}
@@ -348,16 +377,18 @@ export function Notetaker() {
 const LANGS = [["auto", "Auto-detect"], ["en", "English"], ["es", "Spanish"], ["fr", "French"], ["de", "German"], ["hi", "Hindi"], ["ta", "Tamil"], ["ml", "Malayalam"], ["te", "Telugu"], ["zh", "Chinese"], ["ja", "Japanese"], ["ko", "Korean"], ["pt", "Portuguese"], ["it", "Italian"], ["ar", "Arabic"], ["ru", "Russian"]];
 export function Settings({ onClose }) {
   const [s, setS] = useStore("settings");
-  const [, setHistory] = useStore("history");
+  const [diagnostics] = useStore("diagnostics");
   const [mics, setMics] = useState([]);
   const [tab, setTab] = useState(s.apiKey || s.deepgramKey ? "general" : "account");
   const [test, setTest] = useState("");
   const [micErr, setMicErr] = useState("");
+  const [dataMsg, setDataMsg] = useState("");
+  const [dataBusy, setDataBusy] = useState(false);
   const up = (p) => setS({ ...s, ...p });
 
   useEffect(() => {
     const list = () => navigator.mediaDevices.enumerateDevices().then((d) => setMics(d.filter((x) => x.kind === "audioinput")));
-    navigator.mediaDevices.getUserMedia({ audio: true })
+    openMic(s.micId)
       .then((st) => { st.getTracks().forEach((t) => t.stop()); setMicErr(""); return list(); })
       .catch((e) => {
         list().then(() => navigator.mediaDevices.enumerateDevices()).then((d) => {
@@ -368,14 +399,37 @@ export function Settings({ onClose }) {
   }, []);
 
   async function setAutostart(v) {
-    up({ autostart: v });
-    if (!IS_TAURI) return;
-    const a = await import("@tauri-apps/plugin-autostart");
-    v ? a.enable() : a.disable();
+    try {
+      if (IS_TAURI) {
+        const a = await import("@tauri-apps/plugin-autostart");
+        await (v ? a.enable() : a.disable());
+      }
+      up({ autostart: v });
+    } catch (e) { reportError("autostart", e); setMicErr("Could not change startup setting: " + e.message); }
   }
   async function testKey() {
     setTest("Testing…");
     try { await chat("Reply with OK.", "ping"); setTest("✓ Key works"); } catch (e) { setTest("✗ " + e.message); }
+  }
+  async function exportData() {
+    setDataBusy(true); setDataMsg("Preparing backup…");
+    try {
+      const dump = await createBackup();
+      const url = URL.createObjectURL(new Blob([JSON.stringify(dump)], { type: "application/json" }));
+      const a = document.createElement("a"); a.href = url; a.download = "murmur-backup.json"; a.click();
+      setTimeout(() => URL.revokeObjectURL(url), 1000);
+      setDataMsg(`Backup contains ${dump.data.history.length} dictations, ${dump.data.notes.length} notes and ${dump.audio.length} audio clips. API keys are excluded.`);
+    } catch (e) { setDataMsg(e.message); reportError("export backup", e); }
+    finally { setDataBusy(false); }
+  }
+  async function importData(file) {
+    if (!file) return;
+    if (get("noteRec") || ["starting", "recording", "processing"].includes(live.state)) return setDataMsg("Finish recording and transcription before restoring a backup.");
+    if (!confirm("Restore text and settings from this backup? Your current API keys will be kept.")) return;
+    setDataBusy(true);
+    try { await restoreBackup(JSON.parse(await file.text())); setDataMsg("Backup restored, including audio. API keys were kept."); await applyHotkeys(); }
+    catch (e) { setDataMsg(e.message); reportError("restore backup", e); }
+    finally { setDataBusy(false); }
   }
 
   const TABS = [["general", "General"], ["account", "API key"], ["shortcuts", "Shortcuts"], ["offline", "Offline mode"], ["updates", "Updates"], ["data", "Data"]];
@@ -392,7 +446,8 @@ export function Settings({ onClose }) {
             <p className="muted small">Get a free key at <b>console.groq.com/keys</b> (sign in → Create API Key → copy). It stays on this PC only.</p>
             <div className="row-split"><button className="btn" onClick={testKey} disabled={!s.apiKey}>Test key</button><span className="small">{test}</span></div>
             <label className="field"><span>Deepgram API key (fast speech, optional)</span><input type="password" value={s.deepgramKey || ""} placeholder="Paste Deepgram key" onChange={(e) => up({ deepgramKey: e.target.value })} /></label>
-            <p className="muted small">Free $200 credit, no card: <b>console.deepgram.com</b> → sign up → Create API Key. When set, it replaces Groq for speech.</p>
+            <p className="muted small">Create a key at <b>console.deepgram.com</b>. When set, it replaces Groq for speech.</p>
+            {!s.apiKey.trim() && <p className="small muted">Deepgram and offline mode support dictation and basic line breaks. Add a Groq key for AI cleanup, translation, commands and summaries.</p>}
             <label className="field"><span>Speech model (Groq)</span>
               <select value={s.sttModel} onChange={(e) => up({ sttModel: e.target.value })}>
                 <option value="whisper-large-v3-turbo">Whisper Large v3 Turbo (fast)</option>
@@ -418,9 +473,9 @@ export function Settings({ onClose }) {
             <label className="toggle-row"><span>Sound effects<small>Beep on start and stop</small></span><Toggle on={s.sounds} set={(v) => up({ sounds: v })} /></label>
             <label className="toggle-row"><span>Keep text in clipboard<small>Don't restore your old clipboard after pasting</small></span><Toggle on={s.keepInClipboard} set={(v) => up({ keepInClipboard: v })} /></label>
             <label className="toggle-row"><span>Launch at startup<small>Start hidden in the tray when Windows starts</small></span><Toggle on={s.autostart} set={setAutostart} /></label>
-            <label className="toggle-row"><span>Learn from my dictations<small>Learn your names, special words and writing style as you use Murmur</small></span><Toggle on={s.learn} set={(v) => up({ learn: v })} /></label>
-            <label className="toggle-row"><span>Live text<small>Show your words in the pop-up while you talk</small></span><Toggle on={s.liveText} set={(v) => up({ liveText: v })} /></label>
-            <label className="toggle-row"><span>Mute music while recording<small>Silence your speakers while you hold the key</small></span><Toggle on={s.muteWhileRecording} set={(v) => up({ muteWhileRecording: v })} /></label>
+            <label className="toggle-row"><span>Learn from my corrections<small>Learn vocabulary and style from dictations you edit. Automatic replacements require confirmation in Dictionary.</small></span><Toggle on={s.learn} set={(v) => up({ learn: v })} /></label>
+            <label className="toggle-row"><span>Live text<small>Show previews about every 8 seconds. Uses additional speech API requests.</small></span><Toggle on={s.liveText} set={(v) => up({ liveText: v })} /></label>
+            <label className="toggle-row"><span>Mute speakers while recording<small>Mutes all speaker audio, including calls. Restores it when recording ends.</small></span><Toggle on={s.muteWhileRecording} set={(v) => up({ muteWhileRecording: v })} /></label>
             <label className="toggle-row"><span>Voice commands<small>End with “press enter” to send. Say only “delete that” to undo.</small></span><Toggle on={s.voiceCommands} set={(v) => up({ voiceCommands: v })} /></label>
             <label className="field"><span>Translate what I say into</span>
               <select value={s.translateTo} onChange={(e) => up({ translateTo: e.target.value })}>
@@ -436,20 +491,24 @@ export function Settings({ onClose }) {
             <div className="row-split" style={{ border: 0 }}>
               <button className="btn ghost" onClick={() => { up({ hotkeys: { talk: "Ctrl+Space", handsfree: "Ctrl+Shift+Space", command: "Alt+Shift+Space" } }); setTimeout(applyHotkeys, 50); }}>Reset to default</button>
               <button className="btn ghost" onClick={toggleHandsFree}>Test hands-free now</button>
+              <button className="btn ghost" onClick={applyHotkeys}>Retry shortcuts</button>
+              <button className="btn ghost" onClick={() => { up({ hotkeys: { talk: "Ctrl+Alt+F9", handsfree: "Ctrl+Alt+F10", command: "Ctrl+Alt+F11" } }); setTimeout(applyHotkeys, 50); }}>Use alternate shortcuts</button>
             </div>
             <p className="muted small">Command mode: select text, hold the key and say what to change. With nothing selected, ask any question and the answer gets typed.</p>
           </div>}
           {tab === "offline" && <OfflineTab s={s} up={up} />}
           {tab === "updates" && <UpdatesTab />}
           {tab === "data" && <>
-            <p className="muted">All data is stored on this PC. Audio and text go to Groq only to be transcribed.</p>
+            <p className="muted">History and recordings are stored on this PC. Online speech sends audio to Groq or Deepgram. AI cleanup, commands, translation and summaries send text and relevant vocabulary or writing examples to Groq.</p>
+            <p className="small muted">Backups include text, settings and audio, but exclude API keys. Restore keeps the keys already on this PC.</p>
             <div className="modal-actions" style={{ justifyContent: "flex-start" }}>
-              <button className="btn ghost" onClick={() => {
-                const dump = {}; for (const k of Object.keys(localStorage)) if (k.startsWith("murmur:")) dump[k] = localStorage.getItem(k);
-                const a = document.createElement("a"); a.href = URL.createObjectURL(new Blob([JSON.stringify(dump, null, 2)])); a.download = "murmur-backup.json"; a.click();
-              }}>Export all data</button>
-              <button className="btn ghost danger" onClick={() => confirm("Delete all dictation history?") && setHistory([])}>Clear history</button>
+              <button className="btn ghost" disabled={dataBusy} onClick={exportData}>Export backup with audio</button>
+              <label className="btn ghost">Restore backup<input type="file" accept="application/json,.json" disabled={dataBusy} style={{ display: "none" }} onChange={(e) => { importData(e.target.files[0]); e.target.value = ""; }} /></label>
+              <button className="btn ghost danger" disabled={dataBusy} onClick={async () => { if (get("noteRec") || ["starting", "recording", "processing"].includes(live.state)) return setDataMsg("Finish recording and transcription before clearing history."); if (confirm("Delete dictation history and its saved audio?")) { try { await clearHistory(); setDataMsg("Dictation history and audio deleted. Meeting recordings were kept."); } catch (e) { setDataMsg(e.message); } } }}>Clear history and audio</button>
             </div>
+            <p role="status" className="small">{dataMsg}</p>
+            <h3 className="section">Recent errors</h3>
+            {diagnostics.length === 0 ? <p className="small muted">No recorded errors.</p> : diagnostics.slice(0, 15).map((d, i) => <p key={i} className="small">{new Date(d.ts).toLocaleString()} · {d.stage}: {d.message}</p>)}
           </>}
         </div>
       </div>
@@ -497,7 +556,7 @@ function OfflineTab({ s, up }) {
     setPct(null);
   }
   return <>
-    <p className="muted small">Offline mode runs Whisper on your PC. It needs no key and has no limits, and your voice never leaves the PC. It is slower than Groq. Without a key, smart cleanup and translation are off.</p>
+    <p className="muted small">Offline mode runs Whisper on your PC after the model downloads. Audio stays on this PC. With a Groq key, AI cleanup and other AI features still send text to Groq. Without a key, basic dictation and line breaks work.</p>
     <label className="toggle-row"><span>Use offline speech-to-text</span><Toggle on={s.offline} set={(v) => up({ offline: v })} /></label>
     <label className="field"><span>Model</span>
       <select value={s.offlineModel} onChange={(e) => up({ offlineModel: e.target.value })}>

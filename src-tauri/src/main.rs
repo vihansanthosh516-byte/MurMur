@@ -71,12 +71,14 @@ fn set_mute(state: tauri::State<MuteState>, on: bool) -> Result<(), String> {
 
 /// Voice commands: press a key in the focused app.
 #[tauri::command]
-fn press_key(name: String) -> Result<(), String> {
+fn press_key(name: String, expected_window: Option<String>) -> Result<(), String> {
+    verify_window(&expected_window)?;
     let mut en = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
     for k in [Key::Control, Key::Shift, Key::Alt, Key::Space] {
         let _ = en.key(k, Direction::Release);
     }
     sleep(Duration::from_millis(60));
+    verify_window(&expected_window)?;
     match name.as_str() {
         "enter" => en.key(Key::Return, Direction::Click),
         "tab" => en.key(Key::Tab, Direction::Click),
@@ -100,7 +102,8 @@ fn ctrl_combo(c: char) -> Result<(), String> {
 
 /// Put text in the clipboard, press Ctrl+V in the focused app, then restore the old clipboard.
 #[tauri::command]
-fn paste_text(text: String, keep_in_clipboard: bool, type_it: bool) -> Result<(), String> {
+fn paste_text(text: String, keep_in_clipboard: bool, type_it: bool, expected_window: Option<String>) -> Result<(), String> {
+    verify_window(&expected_window)?;
     if type_it {
         // Terminals: type key by key. Newlines become spaces so nothing runs by accident.
         let mut en = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
@@ -108,32 +111,35 @@ fn paste_text(text: String, keep_in_clipboard: bool, type_it: bool) -> Result<()
             let _ = en.key(k, Direction::Release);
         }
         sleep(Duration::from_millis(40));
+        verify_window(&expected_window)?;
         return en.text(&text.lines().collect::<Vec<_>>().join(" ")).map_err(|e| e.to_string());
     }
     let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     let old = cb.get_text().ok();
     cb.set_text(text).map_err(|e| e.to_string())?;
     sleep(Duration::from_millis(60));
-    ctrl_combo('v')?;
+    let pasted = verify_window(&expected_window).and_then(|_| ctrl_combo('v'));
     sleep(Duration::from_millis(250));
     if !keep_in_clipboard {
         if let Some(o) = old {
             let _ = cb.set_text(o);
         }
     }
-    Ok(())
+    pasted
 }
 
 /// Press Ctrl+C in the focused app and return what got copied (for command mode).
 #[tauri::command]
-fn copy_selection() -> Result<String, String> {
+fn copy_selection(expected_window: Option<String>) -> Result<String, String> {
+    verify_window(&expected_window)?;
     let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
     let old = cb.get_text().unwrap_or_default();
     let _ = cb.set_text(String::new());
-    ctrl_combo('c')?;
+    let copied = verify_window(&expected_window).and_then(|_| ctrl_combo('c'));
     sleep(Duration::from_millis(200));
     let got = cb.get_text().unwrap_or_default();
     let _ = cb.set_text(old);
+    copied?;
     Ok(got)
 }
 
@@ -147,6 +153,24 @@ fn active_window_title() -> String {
         let n = GetWindowTextW(h, buf.as_mut_ptr(), buf.len() as i32);
         String::from_utf16_lossy(&buf[..n.max(0) as usize])
     }
+}
+
+#[derive(serde::Serialize)]
+struct ActiveWindow { title: String, id: String }
+
+#[tauri::command]
+fn active_window() -> ActiveWindow {
+    let id = unsafe { windows_sys::Win32::UI::WindowsAndMessaging::GetForegroundWindow() } as usize;
+    ActiveWindow { title: active_window_title(), id: id.to_string() }
+}
+
+fn verify_window(expected: &Option<String>) -> Result<(), String> {
+    if let Some(expected) = expected {
+        if active_window().id != *expected {
+            return Err("Focus changed. Your text is saved in history; copy it into the intended window.".into());
+        }
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -354,7 +378,7 @@ fn main() {
         .manage(Hotkeys::default())
         .manage(MuteState::default())
         .invoke_handler(tauri::generate_handler![
-            paste_text, copy_selection, active_window_title, set_overlay, open_main,
+            paste_text, copy_selection, active_window_title, active_window, set_overlay, open_main,
             set_hotkeys, set_mute, press_key, set_cancel_key, save_kv, load_kv
         ])
         .setup(|app| {

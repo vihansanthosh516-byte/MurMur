@@ -4,3 +4,5 @@ src-tauri/target
 src-tauri/gen
 Murmur_*.exe
 .claude
+test-results
+playwright-report

@@ -2,6 +2,7 @@ import { useEffect, useMemo, useRef, useState } from "react";
 import Icon, { Logo } from "./icons";
 import { useStore, stats, loadAudio, deleteAudio, dayKey, useNow, set as setKey, get as getKey, uid, wordCount } from "./store";
 import { IS_TAURI, subscribe, retry, cancel, learnedWords } from "./engine";
+import { correctedVocabulary } from "./text.js";
 import { Notetaker, Insights, Dictionary, Snippets, Style, Transforms, Scratchpad, Settings, Help, Modal } from "./pages";
 
 const NAV = [
@@ -22,11 +23,13 @@ export default function App() {
   const [modal, setModal] = useState(null);
   const [ui, setUi] = useStore("ui");
   const [settings] = useStore("settings");
+  const [noteRec] = useStore("noteRec");
   const [live, setLive] = useState({});
   const [hideTaken, setHideTaken] = useState(false);
   const taken = hideTaken ? [] : live.taken || [];
   useEffect(() => subscribe(setLive), []);
-  useEffect(() => { if (!settings.apiKey && !settings.deepgramKey) setModal("settings"); }, []);
+  useEffect(() => { if (!settings.apiKey && !settings.deepgramKey && !settings.offline) setModal("settings"); }, []);
+  useEffect(() => setHideTaken(false), [live.taken]);
   // Floating bar buttons open a page here.
   useEffect(() => {
     if (!IS_TAURI) return;
@@ -35,7 +38,7 @@ export default function App() {
     return () => un?.();
   }, []);
 
-  const pages = { notetaker: Notetaker, insights: Insights, dictionary: Dictionary, snippets: Snippets, style: Style, transforms: Transforms, scratchpad: Scratchpad };
+  const pages = { insights: Insights, dictionary: Dictionary, snippets: Snippets, style: Style, transforms: Transforms, scratchpad: Scratchpad };
   const Page = pages[page];
 
   return (
@@ -59,7 +62,7 @@ export default function App() {
             <nav>
               {NAV.map(([id, label, icon]) => (
                 <button key={id} className={"nav" + (page === id ? " active" : "")} onClick={() => setPage(id)}>
-                  <Icon name={icon} /> {label}
+                  <Icon name={icon} /> {label}{id === "notetaker" && noteRec ? " · Recording" : ""}
                 </button>
               ))}
             </nav>
@@ -83,7 +86,9 @@ export default function App() {
                 <button className="link" onClick={() => setHideTaken(true)}>Close</button>
               </div>
             )}
-            {page === "dictation" ? <Dictation setModal={setModal} live={live} /> : <Page />}
+            {/* Keep the meeting recorder mounted while navigating to other pages. */}
+            <div hidden={page !== "notetaker"}><Notetaker /></div>
+            {page === "dictation" ? <Dictation setModal={setModal} live={live} /> : Page ? <Page /> : null}
           </div>
         </main>
       </div>
@@ -127,10 +132,11 @@ function Dictation({ setModal, live }) {
     <div className="dict">
       <div className="dict-col">
         <h1 className="hello">
-          Hey {name}, get back into the flow with <kbd>Ctrl</kbd> + <kbd>Space</kbd>
+          Hey {name}, get back into the flow with <kbd>{settings.hotkeys.talk}</kbd>
         </h1>
 
         {live.state && live.state !== "idle" && <LiveBar live={live} />}
+        {live.notice && <p role="status" className="small muted">{live.notice}</p>}
 
         {!ui.bannerClosed && (
           <div className="banner">
@@ -200,7 +206,7 @@ function LiveBar({ live }) {
     <div className={"livebar " + live.state}>
       <span className="dot" />
       <span>{txt}</span>
-      {live.state === "recording" && <button className="link" onClick={cancel}>Cancel</button>}
+      <button className="link" onClick={cancel}>{live.state === "error" ? "Dismiss" : "Cancel"}</button>
     </div>
   );
 }
@@ -237,10 +243,12 @@ function Row({ h, setHistory }) {
             <textarea className="row-edit" autoFocus value={draft} onChange={(e) => setDraft(e.target.value)} rows={3} />
             <div className="row-edit-actions">
               <button className="btn ghost" onClick={() => { setEditing(false); setDraft(h.text); }}>Cancel</button>
-              <button className="btn" onClick={() => { const n = learnWords(h.text, draft); upd({ text: draft, words: wordCount(draft) }); setEditing(false); if (n) setLearned(n); }}>Save</button>
+              <button className="btn" onClick={() => { const n = learnWords(h.text, draft); upd({ text: draft, words: wordCount(draft), corrected: true }); setEditing(false); if (n) setLearned(n); }}>Save</button>
             </div>
           </div>
-        ) : h.text}
+        ) : h.text || <span className="muted">Audio saved. Use Retry transcript to recover this dictation.</span>}
+        {h.error && <div role="alert" className="small danger">{h.error}</div>}
+        {h.warning && <div className="small muted">{h.warning}</div>}
         {learned && <div className="small learned">Learned {learned} new word{learned > 1 ? "s" : ""} → Dictionary</div>}
       </div>
       <div className="row-actions">
@@ -261,7 +269,7 @@ function Row({ h, setHistory }) {
                 setMenu(false); const b = await loadAudio(h.id); if (!b) return;
                 const a = document.createElement("a"); a.href = URL.createObjectURL(b); a.download = `dictation-${h.id}.webm`; a.click();
               }}>Download audio</button>
-              <button className="danger" onClick={() => { deleteAudio(h.id); setHistory((all) => all.filter((x) => x.id !== h.id)); }}>Delete</button>
+              <button className="danger" onClick={async () => { try { await deleteAudio(h.id); setHistory((all) => all.filter((x) => x.id !== h.id)); } catch (e) { alert(e.message); } }}>Delete</button>
             </div>
           )}
         </div>
@@ -352,22 +360,9 @@ const fmtK = (n) => (n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "K"
 // When you fix a dictation, learn the words you changed. Same-length edits also learn
 // what Murmur misheard, so it gets fixed automatically next time.
 function learnWords(before, after) {
-  const words = (t) => t.match(/[\p{L}\p{N}'-]+/gu) || [];
-  const a = words(before), b = words(after);
+  if (!getKey("settings").learn) return 0;
   const dict = getKey("dictionary");
-  const known = new Set(dict.map((d) => d.word.toLowerCase()));
-  const added = [];
-  const add = (word, replace = "") => {
-    if (word.length < 2 || known.has(word.toLowerCase())) return;
-    known.add(word.toLowerCase());
-    added.push({ id: uid(), word, replace });
-  };
-  if (a.length === b.length) {
-    a.forEach((w, i) => { if (w.toLowerCase() !== b[i].toLowerCase()) add(b[i], w); });
-  } else {
-    const old = new Set(a.map((w) => w.toLowerCase()));
-    b.forEach((w) => { if (!old.has(w.toLowerCase())) add(w); });
-  }
+  const added = correctedVocabulary(before, after, dict).map((word) => ({ id: uid(), word, replace: "", source: "correction" }));
   if (added.length) setKey("dictionary", [...added, ...dict]);
   return added.length;
 }

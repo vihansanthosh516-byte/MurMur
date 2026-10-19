@@ -20,9 +20,9 @@ export default function Overlay() {
     <div className="pill-wrap">
       <div className={"pill " + s.state}>
         {recording && (s.partial
-          ? <span className="pill-live">{s.partial.length > 80 ? "â€¦" + s.partial.slice(-80) : s.partial}</span>
+          ? <span className="pill-live">{s.partial.length > 80 ? "…" + s.partial.slice(-80) : s.partial}</span>
           : <span className="pill-label">{s.mode === "command" ? "Command" : "Recording"}</span>)}
-        {s.state === "processing" && <span className="pill-label">Typingâ€¦</span>}
+        {s.state === "processing" && <span className="pill-label">Typing…</span>}
         {s.state === "error" && <span className="pill-err" title={s.error}>{s.error.slice(0, 90)}</span>}
       </div>
     </div>
