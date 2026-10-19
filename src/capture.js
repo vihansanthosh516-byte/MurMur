@@ -86,7 +86,7 @@ export async function createCapture({ micId, whisperMode, systemAudio, signal, o
       });
       return stopPromise;
     };
-    return { stream: dest.stream, startedAt, stop };
+    return { stream: dest.stream, startedAt, stop, micLabel: mic.getAudioTracks()[0]?.label || "Selected microphone" };
   } catch (e) {
     if (recorder?.state === "recording") recorder.stop();
     release();

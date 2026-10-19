@@ -70,7 +70,7 @@ export default function App() {
             <Checklist ui={ui} setUi={setUi} setModal={setModal} />
             <div className="side-bottom">
               <button className="nav" onClick={() => setModal("invite")}><Icon name="users" /> Invite your team</button>
-              <button className="nav" onClick={() => setModal("free")}><Icon name="gift" /> Get a free month</button>
+              <button className="nav" onClick={() => setModal("free")}><Icon name="gift" /> Usage and costs</button>
               <button className="nav" onClick={() => setModal("settings")}><Icon name="gear" /> Settings</button>
               <button className="nav" onClick={() => setModal("help")}><Icon name="help" /> Help</button>
             </div>
@@ -96,8 +96,8 @@ export default function App() {
       {modal === "settings" && <Settings onClose={() => setModal(null)} />}
       {modal === "help" && <Help onClose={() => setModal(null)} />}
       {modal === "whisper" && <WhisperHelp onClose={() => setModal(null)} />}
-      {modal === "invite" && <Modal title="Invite your team" onClose={() => setModal(null)}><p className="muted">Murmur runs locally on your PC with your own Groq key. Share the installer file with a teammate and they can add their own key.</p></Modal>}
-      {modal === "free" && <Modal title="Get a free month" onClose={() => setModal(null)}><p className="muted">Murmur is free forever. You only use your own Groq API key (free tier).</p></Modal>}
+      {modal === "invite" && <Modal title="Invite your team" onClose={() => setModal(null)}><p className="muted">Share the installer with a teammate. They can use their own speech API key or offline speech recognition.</p></Modal>}
+      {modal === "free" && <Modal title="Usage and costs" onClose={() => setModal(null)}><p className="muted">Murmur has no subscription. Groq and Deepgram usage follows your account limits and billing. Offline speech recognition needs no API key. AI cleanup, commands, translation and summaries require Groq.</p></Modal>}
       {modal === "notifications" && <Modal title="Notifications" onClose={() => setModal(null)}><p className="muted">You're all caught up.</p></Modal>}
       {modal?.startsWith("check:") && <ChecklistModal id={modal.slice(6)} onClose={() => setModal(null)} ui={ui} setUi={setUi} />}
     </div>
@@ -160,9 +160,9 @@ function Dictation({ setModal, live }) {
 
         {history.length === 0 && (
           <div className="empty">
-            Hold <kbd className="sm">Ctrl</kbd> + <kbd className="sm">Space</kbd> in any app and start talking. Let go and your words appear.
+            Hold <kbd className="sm">{settings.hotkeys.talk}</kbd> in any app and start talking. Let go and your words appear.
             <div className="muted small" style={{ marginTop: 8 }}>
-              Tap it quickly for hands-free mode. <kbd className="sm">Alt</kbd>+<kbd className="sm">Shift</kbd>+<kbd className="sm">Space</kbd> = command mode (edit selected text by voice). <kbd className="sm">Esc</kbd> cancels.
+              Tap it quickly for hands-free mode. <kbd className="sm">{settings.hotkeys.command}</kbd> = command mode (edit selected text by voice). <kbd className="sm">Esc</kbd> cancels.
             </div>
           </div>
         )}
@@ -201,7 +201,8 @@ function Dictation({ setModal, live }) {
 }
 
 function LiveBar({ live }) {
-  const txt = { starting: "Starting mic…", recording: live.mode === "command" ? "Listening for a command…" : live.mode === "handsfree" ? "Hands-free — press Ctrl+Space to finish" : "Listening…", processing: "Transcribing…", error: live.error }[live.state];
+  const [settings] = useStore("settings");
+  const txt = { starting: "Starting mic…", recording: live.mode === "command" ? "Listening for a command…" : live.mode === "handsfree" ? `Hands-free — press ${settings.hotkeys.talk} to finish` : "Listening…", processing: "Transcribing…", error: live.error }[live.state];
   return (
     <div className={"livebar " + live.state}>
       <span className="dot" />
@@ -249,7 +250,7 @@ function Row({ h, setHistory }) {
         ) : h.text || <span className="muted">Audio saved. Use Retry transcript to recover this dictation.</span>}
         {h.error && <div role="alert" className="small danger">{h.error}</div>}
         {h.warning && <div className="small muted">{h.warning}</div>}
-        {learned && <div className="small learned">Learned {learned} new word{learned > 1 ? "s" : ""} → Dictionary</div>}
+        {learned > 0 && <div className="small learned">Learned {learned} new word{learned > 1 ? "s" : ""} → Dictionary</div>}
       </div>
       <div className="row-actions">
         <button className="icon-btn" title="Play" onClick={play}><Icon name={playing ? "pause" : "play"} size={19} /></button>
@@ -292,7 +293,7 @@ function WhisperHelp({ onClose }) {
       <ol className="steps">
         <li>Hold your mic or headset close to your mouth (2–5 cm).</li>
         <li>Turn on <b>Whisper mode</b> below. It boosts quiet speech so you can talk softly.</li>
-        <li>Speak at a whisper and hold <kbd className="sm">Ctrl</kbd>+<kbd className="sm">Space</kbd> as usual.</li>
+        <li>Speak at a whisper and hold <kbd className="sm">{s.hotkeys.talk}</kbd> as usual.</li>
       </ol>
       <label className="toggle-row">
         <span>Whisper mode</span>
@@ -357,8 +358,7 @@ function dayLabel(ts) {
 const fmt = (n) => n.toLocaleString();
 const fmtK = (n) => (n >= 1000 ? (n / 1000).toFixed(1).replace(/\.0$/, "") + "K" : String(n));
 
-// When you fix a dictation, learn the words you changed. Same-length edits also learn
-// what Murmur misheard, so it gets fixed automatically next time.
+// Corrections teach vocabulary. Only explicitly confirmed dictionary entries replace text.
 function learnWords(before, after) {
   if (!getKey("settings").learn) return 0;
   const dict = getKey("dictionary");

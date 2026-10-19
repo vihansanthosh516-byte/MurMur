@@ -5,6 +5,7 @@ import { createCapture, openMic } from "./capture.js";
 import { IS_TAURI, transcribe, chat, categoryFor, toggleHandsFree, applyHotkeys, live } from "./engine";
 import { OFFLINE_MODELS, loadOffline } from "./offline";
 import { Toggle } from "./App";
+import { version } from "../package.json";
 
 export function Modal({ title, onClose, children, wide }) {
   useEffect(() => {
@@ -141,6 +142,7 @@ function AppRules() {
 
 // ---------------- Transforms ----------------
 export function Transforms() {
+  const [settings] = useStore("settings");
   const [list, setList] = useStore("transforms");
   const [input, setInput] = useState(""), [out, setOut] = useState(""), [busy, setBusy] = useState(false);
   const [name, setName] = useState(""), [prompt, setPrompt] = useState("");
@@ -152,7 +154,7 @@ export function Transforms() {
   }
   return (
     <div className="page">
-      <PageHead title="Transforms" sub="Rewrite text with AI. In any app: select text, hold Alt+Shift+Space and say what to do (e.g. “make this shorter”)." />
+      <PageHead title="Transforms" sub={`Rewrite text with AI. In any app: select text, hold ${settings.hotkeys.command} and say what to do (e.g. “make this shorter”).`} />
       <div className="two-col">
         <div className="card">
           <textarea rows={8} placeholder="Paste text here…" value={input} onChange={(e) => setInput(e.target.value)} />
@@ -183,10 +185,11 @@ export function Transforms() {
 
 // ---------------- Scratchpad ----------------
 export function Scratchpad() {
+  const [settings] = useStore("settings");
   const [text, setText] = useStore("scratchpad");
   return (
     <div className="page full">
-      <PageHead title="Scratchpad" sub="A place to think out loud. Click inside, then hold Ctrl+Space and talk.">
+      <PageHead title="Scratchpad" sub={`A place to think out loud. Click inside, then hold ${settings.hotkeys.talk} and talk.`}>
         <span className="muted small">{wordCount(text)} words</span>
         <button className="btn ghost" onClick={() => navigator.clipboard.writeText(text)}><Icon name="copy" size={16} /> Copy</button>
         <button className="btn ghost" onClick={() => confirm("Clear scratchpad?") && setText("")}><Icon name="trash" size={16} /> Clear</button>
@@ -384,19 +387,39 @@ export function Settings({ onClose }) {
   const [micErr, setMicErr] = useState("");
   const [dataMsg, setDataMsg] = useState("");
   const [dataBusy, setDataBusy] = useState(false);
+  const [micTest, setMicTest] = useState("");
+  const micProbe = useRef();
   const up = (p) => setS({ ...s, ...p });
 
   useEffect(() => {
     const list = () => navigator.mediaDevices.enumerateDevices().then((d) => setMics(d.filter((x) => x.kind === "audioinput")));
-    openMic(s.micId)
-      .then((st) => { st.getTracks().forEach((t) => t.stop()); setMicErr(""); return list(); })
+    const busy = get("noteRec") || ["starting", "recording", "processing"].includes(live.state);
+    (busy ? Promise.resolve(null) : openMic(s.micId))
+      .then((st) => { st?.getTracks().forEach((t) => t.stop()); setMicErr(""); return list(); })
       .catch((e) => {
         list().then(() => navigator.mediaDevices.enumerateDevices()).then((d) => {
           const n = d.filter((x) => x.kind === "audioinput").length;
           setMicErr((e?.name || "Error") + ": " + (e?.message || "") + " (" + n + " mics seen)");
         }).catch(() => setMicErr((e?.name || "Error") + ": " + (e?.message || "")));
       });
+    navigator.mediaDevices.addEventListener?.("devicechange", list);
+    return () => navigator.mediaDevices.removeEventListener?.("devicechange", list);
   }, []);
+  useEffect(() => () => { micProbe.current?.abort(); }, []);
+
+  async function testMicrophone() {
+    if (micProbe.current || get("noteRec") || ["starting", "recording", "processing"].includes(live.state)) return setMicTest("Finish recording before testing the microphone.");
+    const controller = new AbortController();
+    micProbe.current = controller;
+    let capture, peak = 0;
+    setMicTest("Testing… speak into your microphone.");
+    try {
+      capture = await createCapture({ ...s, signal: controller.signal, onLevel: (level) => { peak = Math.max(peak, level); }, onError: (e) => { setMicTest(e.message); reportError("microphone test", e); controller.abort(); } });
+      await new Promise((resolve) => { const timer = setTimeout(resolve, 2000); controller.signal.addEventListener("abort", () => { clearTimeout(timer); resolve(); }, { once: true }); });
+      if (!controller.signal.aborted) setMicTest(`${capture.micLabel} opened. Peak: ${Math.round(peak * 100)}%. ${peak < 0.01 ? "No sound detected; speak or select another microphone." : "Audio signal detected."}`);
+    } catch (e) { if (e.name !== "AbortError") { setMicTest(e.message); reportError("microphone test", e); } }
+    finally { try { await capture?.stop(); } catch (e) { reportError("stop microphone test", e); } finally { micProbe.current = null; } }
+  }
 
   async function setAutostart(v) {
     try {
@@ -466,6 +489,8 @@ export function Settings({ onClose }) {
                 {mics.filter((m) => m.deviceId !== "default").map((m) => <option key={m.deviceId} value={m.deviceId}>{m.label || "Microphone"}</option>)}
               </select></label>
             {micErr && <p className="small" style={{ color: "#e5484d" }}>Mic problem: {micErr}</p>}
+            <button className="btn ghost" onClick={testMicrophone}>Test microphone</button>
+            <p role="status" className="small">{micTest}</p>
             <label className="field"><span>Language</span>
               <select value={s.language} onChange={(e) => up({ language: e.target.value })}>{LANGS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
             <label className="toggle-row"><span>Smart formatting<small>Remove filler words, fix punctuation, apply style</small></span><Toggle on={s.smartFormat} set={(v) => up({ smartFormat: v })} /></label>
@@ -590,7 +615,7 @@ function UpdatesTab() {
     } catch (e) { setMsg("Update failed: " + e); }
   }
   return <>
-    <p className="muted">Murmur version 1.1.0</p>
+    <p className="muted">Murmur version {version}</p>
     <div className="row-split">
       <button className="btn" onClick={check}>Check for updates</button>
       {upd && <button className="btn" onClick={install}>Install and restart</button>}
@@ -600,16 +625,17 @@ function UpdatesTab() {
 }
 
 export function Help({ onClose }) {
+  const [settings] = useStore("settings");
   return (
     <Modal title="Help" onClose={onClose}>
       <ol className="steps">
-        <li>Put your Groq key in <b>Settings → API key</b>.</li>
+        <li>Add a Groq or Deepgram key in <b>Settings → API key</b>, or enable offline mode. AI cleanup, commands, translation and summaries require Groq.</li>
         <li>Click into any text box in any app.</li>
-        <li>Hold <kbd className="sm">Ctrl</kbd>+<kbd className="sm">Space</kbd>, talk, let go. The text gets typed for you.</li>
-        <li>Tap <kbd className="sm">Ctrl</kbd>+<kbd className="sm">Space</kbd> quickly to go hands-free. Tap again to finish.</li>
-        <li>Select text, hold <kbd className="sm">Alt</kbd>+<kbd className="sm">Shift</kbd>+<kbd className="sm">Space</kbd>, say “make this formal”.</li>
+        <li>Hold <kbd className="sm">{settings.hotkeys.talk}</kbd>, talk, let go. The text gets typed for you.</li>
+        <li>Tap <kbd className="sm">{settings.hotkeys.talk}</kbd> quickly to go hands-free. Tap again to finish.</li>
+        <li>Select text, hold <kbd className="sm">{settings.hotkeys.command}</kbd>, say “make this formal”.</li>
         <li>End with “press enter” to send. Say only “delete that” to undo the last dictation.</li>
-        <li>With nothing selected, hold <kbd className="sm">Alt</kbd>+<kbd className="sm">Shift</kbd>+<kbd className="sm">Space</kbd> and ask a question. The answer gets typed.</li>
+        <li>With nothing selected, hold <kbd className="sm">{settings.hotkeys.command}</kbd> and ask a question. The answer gets typed.</li>
         <li>Closing the window keeps Murmur running in the tray (bottom-right of the taskbar).</li>
       </ol>
     </Modal>
