@@ -8,6 +8,10 @@ test("same-length shifted edit adds vocabulary without mapping unrelated words",
 test("vocabulary deduplicates names case-insensitively", () => {
   assert.deepEqual(correctedVocabulary("hello", "Tauri tauri Vihan", [{ word: "vihan" }]), ["Tauri"]);
 });
+test("Tamil vowel marks stay attached to learned vocabulary", () => {
+  assert.deepEqual(correctedVocabulary("hello", "விஹான்", []), ["விஹான்"]);
+  assert.equal(replacePhrase("விஹான் விஹானின்", "விஹான்", "Vihan"), "Vihan விஹானின்");
+});
 test("replacement supports Unicode and literal replacement tokens", () => {
   assert.equal(replacePhrase("say வணக்கம் now", "வணக்கம்", "$1 $&"), "say $1 $& now");
   assert.equal(replacePhrase("names name", "name", "X"), "names X");

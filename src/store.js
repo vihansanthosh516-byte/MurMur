@@ -101,7 +101,7 @@ export async function hydrate() {
       if (files[key] != null) localStorage.setItem("murmur:" + key, files[key]);
       else {
         const v = localStorage.getItem("murmur:" + key);
-        if (v != null) invoke("save_kv", { key, value: v }).catch(() => {});
+        if (v != null) await invoke("save_kv", { key, value: v });
       }
     }
     // A recording cannot survive an application restart.

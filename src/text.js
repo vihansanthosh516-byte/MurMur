@@ -1,4 +1,4 @@
-const tokens = (t) => t.match(/[\p{L}\p{N}'-]+/gu) || [];
+const tokens = (t) => t.match(/[\p{L}\p{N}][\p{L}\p{M}\p{N}'-]*/gu) || [];
 
 // Learn vocabulary only. An edit is not evidence for a permanent substitution.
 export function correctedVocabulary(before, after, dictionary) {
@@ -12,7 +12,7 @@ export function correctedVocabulary(before, after, dictionary) {
 
 export const escapeRe = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 export function replacePhrase(text, phrase, value, punctuation = false) {
-  const re = new RegExp("(^|[^\\p{L}\\p{N}_])" + escapeRe(phrase) + "(?=$|[^\\p{L}\\p{N}_])" + (punctuation ? "[.,!?]?" : ""), "giu");
+  const re = new RegExp("(^|[^\\p{L}\\p{M}\\p{N}_])" + escapeRe(phrase) + "(?=$|[^\\p{L}\\p{M}\\p{N}_])" + (punctuation ? "[.,!?]?" : ""), "giu");
   return text.replace(re, (_, prefix) => prefix + value);
 }
 

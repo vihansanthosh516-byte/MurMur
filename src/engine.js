@@ -145,7 +145,7 @@ const COMMON = new Set("about above after again against because before being bel
 export function learnedWords(limit = 40) {
   const counts = new Map();
   for (const h of get("history").filter((h) => h.corrected && h.mode !== "command").slice(0, 400)) {
-    const toks = h.text.match(/[\p{L}][\p{L}'-]*/gu) || [];
+    const toks = h.text.match(/[\p{L}][\p{L}\p{M}'-]*/gu) || [];
     toks.forEach((w, i) => {
       const lower = w.toLowerCase();
       const name = i > 0 && /^\p{Lu}/u.test(w) && w !== "I";
@@ -273,6 +273,11 @@ ${s.smartFormat ? "" : "Do not clean or reformat; only translate."}`,
       raw, control
     );
   }
+  return localCleanup(text, false);
+}
+
+function localCleanup(raw, format = get("settings").smartFormat) {
+  let text = localFormat(raw, format);
   for (const d of get("dictionary")) {
     if (d.confirmed && d.replace && d.word) text = replacePhrase(text, d.replace, d.word);
   }
@@ -280,7 +285,7 @@ ${s.smartFormat ? "" : "Do not clean or reformat; only translate."}`,
 }
 
 export function applySnippets(text) {
-  const norm = (s) => s.toLowerCase().replace(/[^\p{L}\p{N}\s]/gu, "").trim();
+  const norm = (s) => s.toLowerCase().replace(/[^\p{L}\p{M}\p{N}\s]/gu, "").trim();
   for (const sn of get("snippets")) {
     if (!sn.trigger) continue;
     if (norm(text) === norm(sn.trigger)) return sn.text;
@@ -370,7 +375,7 @@ async function finish() {
         if (get("settings").translateTo) throw e;
         reportError("cleanup fallback", e);
         job.fallback = true;
-        text = applySnippets(localFormat(vc.text, get("settings").smartFormat));
+        text = localCleanup(vc.text);
         const notice = "Cleanup failed; original transcript was kept. " + e.message;
         patchHistory(job.id, { warning: notice });
         update({ notice });
