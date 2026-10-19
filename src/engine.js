@@ -71,7 +71,7 @@ async function startRecording(mode) {
     const target = t ? await t.invoke("active_window") : { title: document.title, id: "" };
     job.targetApp = target.title;
     job.windowId = target.id;
-    job.selection = mode === "command" && t ? await t.invoke("copy_selection", { expectedWindow: target.id }) : "";
+    job.selection = "";
     job.controller.signal.throwIfAborted();
     job.capture = await createCapture({ ...s, signal: job.controller.signal,
       onLevel: (level) => { job.peak = Math.max(job.peak, level); if (session === job && !job.finishing) update({ level }); },
@@ -344,11 +344,20 @@ async function finish() {
     job.controller.signal.throwIfAborted();
     beep(660);
     if (!blob?.size || secs < 0.25) return cancel();
-    const item = { id: job.id, ts: Date.now(), text: "", raw: "", words: 0, secs, app: job.targetApp, flagged: false, mode, sourceText: job.selection, status: "transcribing" };
+    const item = { id: job.id, ts: Date.now(), text: "", raw: "", words: 0, secs, app: job.targetApp, flagged: false, mode, sourceText: mode === "command" ? null : "", status: "transcribing" };
     set("history", (h) => [item, ...h]);
     try { await saveAudio(job.id, blob); }
     catch (e) { reportError("save dictation audio", e); update({ notice: "Audio could not be saved. Keep the transcript before closing the app." }); }
     job.controller.signal.throwIfAborted();
+    // Copy only after the hold ends: Ctrl+C releases modifiers and would otherwise
+    // make the native release watcher stop command recording during startup.
+    if (mode === "command") {
+      const t = await T();
+      job.controller.signal.throwIfAborted();
+      job.selection = t ? await t.invoke("copy_selection", { expectedWindow: job.windowId }) : job.element?.value?.slice(job.element.selectionStart, job.element.selectionEnd) || "";
+      job.controller.signal.throwIfAborted();
+      patchHistory(job.id, { sourceText: job.selection });
+    }
     if (job.peak < 0.01) throw new Error("No sound detected. Audio is saved; select the correct microphone in Settings.");
     const control = { signal: job.controller.signal };
     const raw = await transcribe(blob, control);
@@ -402,6 +411,7 @@ async function finish() {
 // Re-run a saved clip (history menu: "Retry").
 export async function retry(item, blob) {
   try {
+    if (item.mode === "command" && typeof item.sourceText !== "string") throw new Error("The original selection was not captured. Reselect the text and record the command again.");
     const raw = await transcribe(blob);
     patchHistory(item.id, { raw });
     if (!raw) throw new Error("No speech detected in this clip");
