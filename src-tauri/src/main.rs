@@ -71,7 +71,18 @@ fn set_mute(state: tauri::State<MuteState>, on: bool) -> Result<(), String> {
 
 /// Voice commands: press a key in the focused app.
 #[tauri::command]
-fn press_key(name: String, expected_window: Option<String>) -> Result<(), String> {
+async fn press_key(name: String, expected_window: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = INPUT_LOCK.lock().map_err(|e| e.to_string())?;
+        press_key_blocking(name, expected_window)
+    }).await.map_err(|e| e.to_string())?
+}
+
+// Clipboard consumers must keep processing messages while injected keys arrive.
+// Serialize operations on a worker, never on the WebView's UI thread.
+static INPUT_LOCK: Mutex<()> = Mutex::new(());
+
+fn press_key_blocking(name: String, expected_window: Option<String>) -> Result<(), String> {
     verify_window(&expected_window)?;
     let mut en = Enigo::new(&Settings::default()).map_err(|e| e.to_string())?;
     for k in [Key::Control, Key::Shift, Key::Alt, Key::Space] {
@@ -102,7 +113,36 @@ fn ctrl_combo(c: char) -> Result<(), String> {
 
 /// Put text in the clipboard, press Ctrl+V in the focused app, then restore the old clipboard.
 #[tauri::command]
-fn paste_text(text: String, keep_in_clipboard: bool, type_it: bool, expected_window: Option<String>) -> Result<(), String> {
+async fn paste_text(text: String, keep_in_clipboard: bool, type_it: bool, expected_window: Option<String>) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = INPUT_LOCK.lock().map_err(|e| e.to_string())?;
+        paste_text_blocking(text, keep_in_clipboard, type_it, expected_window)
+    }).await.map_err(|e| e.to_string())?
+}
+
+enum ClipboardSnapshot {
+    Text(String),
+    Image(arboard::ImageData<'static>),
+    Unavailable,
+}
+
+impl ClipboardSnapshot {
+    fn capture(cb: &mut arboard::Clipboard) -> Self {
+        if let Ok(text) = cb.get_text() { Self::Text(text) }
+        else if let Ok(image) = cb.get_image() { Self::Image(image) }
+        else { Self::Unavailable }
+    }
+
+    fn restore(self, cb: &mut arboard::Clipboard) {
+        let _ = match self {
+            Self::Text(text) => cb.set_text(text),
+            Self::Image(image) => cb.set_image(image),
+            Self::Unavailable => Ok(()),
+        };
+    }
+}
+
+fn paste_text_blocking(text: String, keep_in_clipboard: bool, type_it: bool, expected_window: Option<String>) -> Result<(), String> {
     verify_window(&expected_window)?;
     if type_it {
         // Terminals: type key by key. Newlines become spaces so nothing runs by accident.
@@ -115,30 +155,36 @@ fn paste_text(text: String, keep_in_clipboard: bool, type_it: bool, expected_win
         return en.text(&text.lines().collect::<Vec<_>>().join(" ")).map_err(|e| e.to_string());
     }
     let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    let old = cb.get_text().ok();
-    cb.set_text(text).map_err(|e| e.to_string())?;
+    let old = ClipboardSnapshot::capture(&mut cb);
+    cb.set_text(text.clone()).map_err(|e| e.to_string())?;
     sleep(Duration::from_millis(60));
     let pasted = verify_window(&expected_window).and_then(|_| ctrl_combo('v'));
     sleep(Duration::from_millis(250));
-    if !keep_in_clipboard {
-        if let Some(o) = old {
-            let _ = cb.set_text(o);
-        }
+    // Don't overwrite something the user copied while the paste was pending.
+    if !keep_in_clipboard && cb.get_text().ok().as_ref() == Some(&text) {
+        old.restore(&mut cb);
     }
     pasted
 }
 
 /// Press Ctrl+C in the focused app and return what got copied (for command mode).
 #[tauri::command]
-fn copy_selection(expected_window: Option<String>) -> Result<String, String> {
+async fn copy_selection(expected_window: Option<String>) -> Result<String, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let _guard = INPUT_LOCK.lock().map_err(|e| e.to_string())?;
+        copy_selection_blocking(expected_window)
+    }).await.map_err(|e| e.to_string())?
+}
+
+fn copy_selection_blocking(expected_window: Option<String>) -> Result<String, String> {
     verify_window(&expected_window)?;
     let mut cb = arboard::Clipboard::new().map_err(|e| e.to_string())?;
-    let old = cb.get_text().unwrap_or_default();
-    let _ = cb.set_text(String::new());
+    let old = ClipboardSnapshot::capture(&mut cb);
+    cb.set_text(String::new()).map_err(|e| e.to_string())?;
     let copied = verify_window(&expected_window).and_then(|_| ctrl_combo('c'));
     sleep(Duration::from_millis(200));
     let got = cb.get_text().unwrap_or_default();
-    let _ = cb.set_text(old);
+    old.restore(&mut cb);
     copied?;
     Ok(got)
 }

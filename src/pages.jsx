@@ -389,6 +389,9 @@ export function Settings({ onClose }) {
   const [dataBusy, setDataBusy] = useState(false);
   const [micTest, setMicTest] = useState("");
   const micProbe = useRef();
+  const insertionTarget = useRef();
+  const [insertionTest, setInsertionTest] = useState("");
+  const [insertionBusy, setInsertionBusy] = useState(false);
   const up = (p) => setS({ ...s, ...p });
 
   useEffect(() => {
@@ -419,6 +422,26 @@ export function Settings({ onClose }) {
       if (!controller.signal.aborted) setMicTest(`${capture.micLabel} opened. Peak: ${Math.round(peak * 100)}%. ${peak < 0.01 ? "No sound detected; speak or select another microphone." : "Audio signal detected."}`);
     } catch (e) { if (e.name !== "AbortError") { setMicTest(e.message); reportError("microphone test", e); } }
     finally { try { await capture?.stop(); } catch (e) { reportError("stop microphone test", e); } finally { micProbe.current = null; } }
+  }
+
+  async function testInsertion() {
+    if (!IS_TAURI) return setInsertionTest("Run the desktop app to test text insertion.");
+    if (get("noteRec") || ["starting", "recording", "processing"].includes(live.state)) return setInsertionTest("Finish recording before testing insertion.");
+    setInsertionBusy(true); setInsertionTest("Testing text insertion…");
+    const expected = "Murmur insertion test. தமிழ் 123.";
+    try {
+      const { invoke } = await import("@tauri-apps/api/core");
+      const target = insertionTarget.current;
+      target.value = ""; target.focus();
+      const window = await invoke("active_window");
+      await invoke("paste_text", { text: expected, keepInClipboard: false, typeIt: false, expectedWindow: window.id });
+      if (target.value !== expected) throw new Error("Inserted text did not match. Try keeping text in the clipboard or typing into another app.");
+      target.select();
+      const copied = await invoke("copy_selection", { expectedWindow: window.id });
+      if (copied !== expected) throw new Error("Paste passed, but selected text could not be copied.");
+      setInsertionTest("Passed: exact text inserted and selection copied. No audio or API requests used.");
+    } catch (e) { setInsertionTest(e.message || String(e)); reportError("insertion test", e); }
+    finally { setInsertionBusy(false); }
   }
 
   async function setAutostart(v) {
@@ -491,6 +514,9 @@ export function Settings({ onClose }) {
             {micErr && <p className="small" style={{ color: "#e5484d" }}>Mic problem: {micErr}</p>}
             <button className="btn ghost" onClick={testMicrophone}>Test microphone</button>
             <p role="status" className="small">{micTest}</p>
+            <button className="btn ghost" disabled={insertionBusy} onClick={testInsertion}>Test text insertion</button>
+            <textarea ref={insertionTarget} aria-label="Text insertion test area" rows={2} placeholder="The test inserts a fixed sample here." />
+            <p role="status" className="small">{insertionTest}</p>
             <label className="field"><span>Language</span>
               <select value={s.language} onChange={(e) => up({ language: e.target.value })}>{LANGS.map(([v, l]) => <option key={v} value={v}>{l}</option>)}</select></label>
             <label className="toggle-row"><span>Smart formatting<small>Remove filler words, fix punctuation, apply style</small></span><Toggle on={s.smartFormat} set={(v) => up({ smartFormat: v })} /></label>
