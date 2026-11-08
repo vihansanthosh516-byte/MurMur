@@ -188,7 +188,8 @@ export async function transcribe(blob, control = {}) {
   fd.append("response_format", "json");
   fd.append("temperature", "0");
   // Names and Dictionary words help Whisper spell them right.
-  const words = [...new Set([s.name, ...get("dictionary").map((d) => d.word), ...(s.learn ? learnedWords() : [])].filter(Boolean))];
+  // Learned history words are left out: a long list of unrelated words makes Whisper hear them instead of the speech.
+  const words = [...new Set([s.name, ...get("dictionary").map((d) => d.word)].filter(Boolean))];
   const hint = [s.context.trim(), words.length ? "Vocabulary: " + words.join(", ") + "." : ""].filter(Boolean).join(" ");
   if (hint) fd.append("prompt", hint.slice(0, 800));
   if (s.language !== "auto") fd.append("language", s.language);

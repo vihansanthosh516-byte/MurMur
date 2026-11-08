@@ -1,6 +1,7 @@
 // Own every track and recorder, including resources acquired after cancellation.
 export async function openMic(micId = "default") {
-  const base = { echoCancellation: true, noiseSuppression: true, autoGainControl: true };
+  // Whisper is trained on raw speech. WebRTC echo cancellation and noise suppression smear consonants.
+  const base = { echoCancellation: false, noiseSuppression: false, autoGainControl: true, channelCount: 1 };
   const open = (id) => navigator.mediaDevices.getUserMedia({ audio: { ...base, ...(id && id !== "default" ? { deviceId: { exact: id } } : {}) } });
   const recoverable = (e) => ["NotFoundError", "OverconstrainedError", "NotReadableError"].includes(e.name);
   if (micId !== "default") {
@@ -21,7 +22,7 @@ export function recorderOptions(audioBitsPerSecond = 64000) {
   return { audioBitsPerSecond, ...(mimeType ? { mimeType } : {}) };
 }
 
-export async function createCapture({ micId, whisperMode, systemAudio, signal, onLevel, onError, audioBitsPerSecond } = {}) {
+export async function createCapture({ micId, whisperMode, systemAudio, signal, onLevel, onError, audioBitsPerSecond, tailMs = 300 } = {}) {
   const streams = [];
   let ctx, recorder, timer, stopPromise;
   let released = false;
@@ -81,8 +82,11 @@ export async function createCapture({ micId, whisperMode, systemAudio, signal, o
         const complete = () => { release(); resolve(new Blob(chunks, { type: recorder.mimeType || "audio/webm" })); };
         recorder.onstop = complete;
         recorder.onerror = (e) => { release(); reject(e.error || new Error("Audio recorder failed")); };
-        try { if (recorder.state === "inactive") complete(); else recorder.stop(); }
-        catch (e) { release(); reject(e); }
+        // Keep a short tail so the last word is not cut when the key is released.
+        setTimeout(() => {
+          try { if (recorder.state === "inactive") complete(); else recorder.stop(); }
+          catch (e) { release(); reject(e); }
+        }, tailMs);
       });
       return stopPromise;
     };
