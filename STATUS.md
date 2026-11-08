@@ -25,3 +25,8 @@ The user requests only Ctrl+Space held while speaking. Quick release now stops o
 The default speech model is now full Whisper Large v3. Older settings migration no longer forces Turbo. This PC is configured with full v3, English, and only Ctrl+Space. Other supported languages remain available in Settings. All 29 Node tests, 2 Edge integration tests, the frontend build, optimized Windows executable, and NSIS packaging pass. The installed executable and installer metadata report 1.1.3. A real native quick-tap check stayed idle and created no extra history item (17 before and after). Sustained hold/release behavior is covered by regression tests; the desktop automation API cannot hold keys across calls.
 
 Accuracy is not fixed yet: retrying the same 4.651-second saved clip with full v3 and English produced “I'm burning my mic for the one, two, three.” This did not improve the user's expected phrase. The saved clip was played locally, and the user was asked whether it contains clear, complete speech, quiet/clipped speech, or no audible speech. That answer is needed to distinguish capture quality from recognition errors before further tuning. The app was briefly blank on a 1.1.2 restart during compilation; the installed 1.1.3 launch rendered normally.
+
+## Accuracy changes (unreleased)
+
+Source now records raw microphone audio (no WebRTC echo cancellation or noise suppression; AGC kept), keeps a 300 ms tail after key release, and leaves learned history words out of the Whisper prompt (Dictionary words and name stay). 29 Node and 2 Edge tests pass. Not yet verified with real speech or rebuilt into an installer.
+
