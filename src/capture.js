@@ -51,11 +51,13 @@ export async function createCapture({ micId, whisperMode, systemAudio, signal, o
     if (ctx.state === "suspended") await ctx.resume();
     check();
     const gain = ctx.createGain();
-    gain.gain.value = whisperMode ? 3.5 : 1;
+    // Auto gain already levels the mic. A large extra boost clips normal speech and garbles words.
+    gain.gain.value = whisperMode ? 1.8 : 1;
     ctx.createMediaStreamSource(mic).connect(gain);
     const limiter = ctx.createDynamicsCompressor();
-    limiter.threshold.value = -3;
-    limiter.ratio.value = 20;
+    limiter.threshold.value = -6;
+    if (limiter.knee) limiter.knee.value = 6;
+    limiter.ratio.value = 4;
     gain.connect(limiter);
     const dest = ctx.createMediaStreamDestination();
     streams.push(dest.stream);
