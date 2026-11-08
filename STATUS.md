@@ -6,7 +6,7 @@ Verified for 1.1.1: 27 Node regression tests, 2 Edge browser integration tests, 
 
 The Rust toolchain is installed by Scoop. Set `RUSTUP_HOME` and `CARGO_HOME` to the `.rustup` and `.cargo` directories under `scoop/apps/rustup/current` when using that installation.
 
-The current installer is `Murmur_1.1.4_x64-setup.exe` in the project root. Older root installers are archived under `murmur-build/old-installers`. The build helper reads Cargo metadata from `src-tauri` so it finds the same output directory as Tauri. Frontend rebuilds must not run while Rust is embedding frontend assets.
+The current installer is `Murmur_1.1.5_x64-setup.exe` in the project root. Older root installers are archived under `murmur-build/old-installers`. The build helper reads Cargo metadata from `src-tauri` so it finds the same output directory as Tauri. Frontend rebuilds must not run while Rust is embedding frontend assets.
 
 Existing dictionary substitutions require confirmation because old manual and automatically learned entries cannot be distinguished safely. API keys remain excluded from exported backups.
 
@@ -30,3 +30,5 @@ Accuracy is not fixed yet: retrying the same 4.651-second saved clip with full v
 
 Source now records raw microphone audio (no WebRTC echo cancellation or noise suppression; AGC kept), keeps a 300 ms tail after key release, and leaves learned history words out of the Whisper prompt (Dictionary words and name stay). 29 Node and 2 Edge tests pass. Built and installed as 1.1.4 (installed murmur.exe reports 1.1.4). Not yet verified with real speech.
 
+
+1.1.5: whisper mode boost lowered from 3.5x to 1.8x with a softer limiter (threshold -6 dB, ratio 4) to stop clipping. Installed. The user's settings had Offline on with Whisper Base, which explains slow, poor results; the user is switching to online Groq.
